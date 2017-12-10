@@ -32,6 +32,7 @@ from .utils import (
     path_with_ext,
     sqlite_timelimit,
     to_css_class,
+    expand_sql,
     validate_sql_select,
 )
 from .version import __version__
@@ -277,8 +278,10 @@ class BaseView(RenderMixin):
         params = request.raw_args
         if 'sql' in params:
             params.pop('sql')
+
+        expanded_sql = expand_sql(sql)
         # Extract any :named parameters
-        named_parameters = self.re_named_parameter.findall(sql)
+        named_parameters = self.re_named_parameter.findall(expanded_sql)
         named_parameter_values = {
             named_parameter: params.get(named_parameter) or ''
             for named_parameter in named_parameters
@@ -293,7 +296,7 @@ class BaseView(RenderMixin):
         if params.get('_sql_time_limit_ms'):
             extra_args['custom_time_limit'] = int(params['_sql_time_limit_ms'])
         rows, truncated, description = await self.execute(
-            name, sql, params, truncate=True, **extra_args
+            name, expanded_sql, params, truncate=True, **extra_args
         )
         columns = [r[0] for r in description]
 

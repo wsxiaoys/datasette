@@ -1,3 +1,5 @@
+from jinja2 import Environment
+
 from contextlib import contextmanager
 import base64
 import hashlib
@@ -80,8 +82,12 @@ disallawed_sql_res = [
 ]
 
 
+def expand_sql(sql):
+    return Environment().from_string(sql).render().strip()
+
+
 def validate_sql_select(sql):
-    sql = sql.strip().lower()
+    sql = expand_sql(sql.strip().lower())
     if not any(r.match(sql) for r in allowed_sql_res):
         raise InvalidSql('Statement must be a SELECT')
     for r, msg in disallawed_sql_res:
