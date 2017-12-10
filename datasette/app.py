@@ -405,16 +405,6 @@ class DatabaseView(BaseView):
         }, ('database-{}.html'.format(to_css_class(name)), 'database.html')
 
 
-class DatabaseDownload(BaseView):
-    async def view_get(self, request, name, hash, **kwargs):
-        filepath = self.ds.inspect()[name]['file']
-        return await response.file_stream(
-            filepath, headers={
-                'Content-Disposition': 'attachment; filename="{}"'.format(filepath)
-            }
-        )
-
-
 class RowTableShared(BaseView):
     async def display_columns_and_rows(self, database, table, description, rows, link_column=False, expand_foreign_keys=True):
         "Returns columns, rows for specified table - including fancy foreign key treatment"
@@ -1007,10 +997,6 @@ class Datasette:
         app.add_route(
             DatabaseView.as_view(self),
             '/<db_name:[^/\.]+?><as_json:(.jsono?)?$>'
-        )
-        app.add_route(
-            DatabaseDownload.as_view(self),
-            '/<db_name:[^/]+?><as_db:(\.db)$>'
         )
         app.add_route(
             TableView.as_view(self),
