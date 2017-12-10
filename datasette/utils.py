@@ -83,7 +83,12 @@ disallawed_sql_res = [
 
 
 def expand_sql(sql):
-    return Environment().from_string(sql).render().strip()
+    return Environment(
+        line_statement_prefix='#',
+        line_comment_prefix='##',
+        variable_start_string='${',
+        variable_end_string='}',
+        ).from_string(sql).render().strip()
 
 
 def validate_sql_select(sql):
