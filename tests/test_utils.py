@@ -3,9 +3,12 @@ Tests for various datasette helper functions.
 """
 
 from datasette import utils
+import json
+import os
 import pytest
 import sqlite3
-import json
+import tempfile
+from unittest.mock import patch
 
 
 @pytest.mark.parametrize('path,expected', [
@@ -123,6 +126,8 @@ def test_validate_sql_select_bad(bad_sql):
     'select count(*) from airports',
     'select foo from bar',
     'select 1 + 1',
+    'SELECT\nblah FROM foo',
+    'WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt LIMIT 10) SELECT x FROM cnt;'
 ])
 def test_validate_sql_select_good(good_sql):
     utils.validate_sql_select(good_sql)
@@ -145,9 +150,77 @@ def test_detect_fts():
     );
     CREATE VIEW Test_View AS SELECT * FROM Dumb_Table;
     CREATE VIRTUAL TABLE "Street_Tree_List_fts" USING FTS4 ("qAddress", "qCaretaker", "qSpecies", content="Street_Tree_List");
+    CREATE VIRTUAL TABLE r USING rtree(a, b, c);
     '''
     conn = sqlite3.connect(':memory:')
     conn.executescript(sql)
     assert None is utils.detect_fts(conn, 'Dumb_Table')
     assert None is utils.detect_fts(conn, 'Test_View')
+    assert None is utils.detect_fts(conn, 'r')
     assert 'Street_Tree_List_fts' == utils.detect_fts(conn, 'Street_Tree_List')
+
+
+@pytest.mark.parametrize('url,expected', [
+    ('http://www.google.com/', True),
+    ('https://example.com/', True),
+    ('www.google.com', False),
+    ('http://www.google.com/ is a search engine', False),
+])
+def test_is_url(url, expected):
+    assert expected == utils.is_url(url)
+
+
+@pytest.mark.parametrize('s,expected', [
+    ('simple', 'simple'),
+    ('MixedCase', 'MixedCase'),
+    ('-no-leading-hyphens', 'no-leading-hyphens-65bea6'),
+    ('_no-leading-underscores', 'no-leading-underscores-b921bc'),
+    ('no spaces', 'no-spaces-7088d7'),
+    ('-', '336d5e'),
+    ('no $ characters', 'no--characters-59e024'),
+])
+def test_to_css_class(s, expected):
+    assert expected == utils.to_css_class(s)
+
+
+def test_temporary_docker_directory_uses_hard_link():
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        open('hello', 'w').write('world')
+        # Default usage of this should use symlink
+        with utils.temporary_docker_directory(
+            files=['hello'],
+            name='t',
+            metadata=None,
+            extra_options=None,
+            branch=None,
+            template_dir=None,
+            static=[],
+        ) as temp_docker:
+            hello = os.path.join(temp_docker, 'hello')
+            assert 'world' == open(hello).read()
+            # It should be a hard link
+            assert 2 == os.stat(hello).st_nlink
+
+
+@patch('os.link')
+def test_temporary_docker_directory_uses_copy_if_hard_link_fails(mock_link):
+    # Copy instead if os.link raises OSError (normally due to different device)
+    mock_link.side_effect = OSError
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        open('hello', 'w').write('world')
+        # Default usage of this should use symlink
+        with utils.temporary_docker_directory(
+            files=['hello'],
+            name='t',
+            metadata=None,
+            extra_options=None,
+            branch=None,
+            template_dir=None,
+            static=[],
+        ) as temp_docker:
+            hello = os.path.join(temp_docker, 'hello')
+            assert 'world' == open(hello).read()
+            # It should be a copy, not a hard link
+            assert 1 == os.stat(hello).st_nlink

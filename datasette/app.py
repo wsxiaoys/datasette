@@ -3,13 +3,13 @@ from sanic import response
 from sanic.exceptions import NotFound
 from sanic.views import HTTPMethodView
 from sanic.request import RequestParameters
-from sanic_jinja2 import SanicJinja2
-from jinja2 import FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, ChoiceLoader, PrefixLoader
 import re
 import sqlite3
 from pathlib import Path
 from concurrent import futures
 import asyncio
+import os
 import threading
 import urllib.parse
 import json
@@ -25,11 +25,13 @@ from .utils import (
     escape_sqlite_table_name,
     filters_should_redirect,
     get_all_foreign_keys,
+    is_url,
     InvalidSql,
     path_from_row_pks,
     path_with_added_args,
     path_with_ext,
     sqlite_timelimit,
+    to_css_class,
     validate_sql_select,
 )
 from .version import __version__
@@ -37,17 +39,35 @@ from .version import __version__
 app_root = Path(__file__).parent.parent
 
 HASH_BLOCK_SIZE = 1024 * 1024
+HASH_LENGTH = 7
 
 connections = threading.local()
 
 
-class BaseView(HTTPMethodView):
-    template = None
+class RenderMixin(HTTPMethodView):
+    def render(self, templates, **context):
+        template = self.jinja_env.select_template(templates)
+        select_templates = ['{}{}'.format(
+            '*' if template_name == template.name else '',
+            template_name
+        ) for template_name in templates]
+        return response.html(
+            template.render({
+                **context, **{
+                    'app_css_hash': self.ds.app_css_hash(),
+                    'select_templates': select_templates,
+                }
+            })
+        )
+
+
+class BaseView(RenderMixin):
+    re_named_parameter = re.compile(':([a-zA-Z0-9_]+)')
 
     def __init__(self, datasette):
         self.ds = datasette
         self.files = datasette.files
-        self.jinja = datasette.jinja
+        self.jinja_env = datasette.jinja_env
         self.executor = datasette.executor
         self.page_size = datasette.page_size
         self.max_returned_rows = datasette.max_returned_rows
@@ -99,7 +119,7 @@ class BaseView(HTTPMethodView):
             info = databases[name]
         except KeyError:
             raise NotFound('Database not found: {}'.format(name))
-        expected = info['hash'][:7]
+        expected = info['hash'][:HASH_LENGTH]
         if expected != hash:
             should_redirect = '/{}-{}'.format(
                 name, expected,
@@ -158,6 +178,9 @@ class BaseView(HTTPMethodView):
             self.executor, sql_operation_in_thread
         )
 
+    def get_templates(self, database, table=None):
+        assert NotImplemented
+
     async def get(self, request, db_name, **kwargs):
         name, hash, should_redirect = self.resolve_db_name(db_name, **kwargs)
         if should_redirect:
@@ -171,8 +194,8 @@ class BaseView(HTTPMethodView):
             as_json = False
         extra_template_data = {}
         start = time.time()
-        template = self.template
         status_code = 200
+        templates = []
         try:
             response_or_template_contexts = await self.data(
                 request, name, hash, **kwargs
@@ -180,7 +203,7 @@ class BaseView(HTTPMethodView):
             if isinstance(response_or_template_contexts, response.HTTPResponse):
                 return response_or_template_contexts
             else:
-                data, extra_template_data = response_or_template_contexts
+                data, extra_template_data, templates = response_or_template_contexts
         except (sqlite3.OperationalError, InvalidSql) as e:
             data = {
                 'ok': False,
@@ -188,8 +211,8 @@ class BaseView(HTTPMethodView):
                 'database': name,
                 'database_hash': hash,
             }
-            template = 'error.html'
             status_code = 400
+            templates = ['error.html']
         end = time.time()
         data['query_ms'] = (end - start) * 1000
         for key in ('source', 'source_url', 'license', 'license_url'):
@@ -231,13 +254,15 @@ class BaseView(HTTPMethodView):
                 **{
                     'url_json': path_with_ext(request, '.json'),
                     'url_jsono': path_with_ext(request, '.jsono'),
-                    'metadata': self.ds.metadata,
+                    'extra_css_urls': self.ds.extra_css_urls(),
+                    'extra_js_urls': self.ds.extra_js_urls(),
                     'datasette_version': __version__,
                 }
             }
-            r = self.jinja.render(
-                template,
-                request,
+            if 'metadata' not in context:
+                context['metadata'] = self.ds.metadata
+            r = self.render(
+                templates,
                 **context,
             )
             r.status = status_code
@@ -248,12 +273,59 @@ class BaseView(HTTPMethodView):
             )
         return r
 
+    async def custom_sql(self, request, name, hash, sql, editable=True, canned_query=None):
+        params = request.raw_args
+        if 'sql' in params:
+            params.pop('sql')
+        # Extract any :named parameters
+        named_parameters = self.re_named_parameter.findall(sql)
+        named_parameter_values = {
+            named_parameter: params.get(named_parameter) or ''
+            for named_parameter in named_parameters
+        }
 
-class IndexView(HTTPMethodView):
+        # Set to blank string if missing from params
+        for named_parameter in named_parameters:
+            if named_parameter not in params:
+                params[named_parameter] = ''
+
+        extra_args = {}
+        if params.get('_sql_time_limit_ms'):
+            extra_args['custom_time_limit'] = int(params['_sql_time_limit_ms'])
+        rows, truncated, description = await self.execute(
+            name, sql, params, truncate=True, **extra_args
+        )
+        columns = [r[0] for r in description]
+
+        templates = ['query-{}.html'.format(to_css_class(name)), 'query.html']
+        if canned_query:
+            templates.insert(0, 'query-{}-{}.html'.format(
+                to_css_class(name), to_css_class(canned_query)
+            ))
+
+        return {
+            'database': name,
+            'rows': rows,
+            'truncated': truncated,
+            'columns': columns,
+            'query': {
+                'sql': sql,
+                'params': params,
+            }
+        }, {
+            'database_hash': hash,
+            'custom_sql': True,
+            'named_parameter_values': named_parameter_values,
+            'editable': editable,
+            'canned_query': canned_query,
+        }, templates
+
+
+class IndexView(RenderMixin):
     def __init__(self, datasette):
         self.ds = datasette
         self.files = datasette.files
-        self.jinja = datasette.jinja
+        self.jinja_env = datasette.jinja_env
         self.executor = datasette.executor
 
     async def get(self, request, as_json):
@@ -264,7 +336,7 @@ class IndexView(HTTPMethodView):
             database = {
                 'name': key,
                 'hash': info['hash'],
-                'path': '{}-{}'.format(key, info['hash'][:7]),
+                'path': '{}-{}'.format(key, info['hash'][:HASH_LENGTH]),
                 'tables_truncated': sorted(
                     tables,
                     key=lambda t: t['count'],
@@ -290,12 +362,13 @@ class IndexView(HTTPMethodView):
                 }
             )
         else:
-            return self.jinja.render(
-                'index.html',
-                request,
+            return self.render(
+                ['index.html'],
                 databases=databases,
                 metadata=self.ds.metadata,
                 datasette_version=__version__,
+                extra_css_urls=self.ds.extra_css_urls(),
+                extra_js_urls=self.ds.extra_js_urls(),
             )
 
 
@@ -304,13 +377,13 @@ async def favicon(request):
 
 
 class DatabaseView(BaseView):
-    template = 'database.html'
-    re_named_parameter = re.compile(':([a-zA-Z0-9_]+)')
-
     async def data(self, request, name, hash):
         if request.args.get('sql'):
-            return await self.custom_sql(request, name, hash)
+            sql = request.raw_args.pop('sql')
+            validate_sql_select(sql)
+            return await self.custom_sql(request, name, hash, sql)
         info = self.ds.inspect()[name]
+        metadata = self.ds.metadata.get('databases', {}).get(name, {})
         tables = list(info['tables'].values())
         tables.sort(key=lambda t: (t['hidden'], t['name']))
         return {
@@ -318,49 +391,18 @@ class DatabaseView(BaseView):
             'tables': tables,
             'hidden_count': len([t for t in tables if t['hidden']]),
             'views': info['views'],
+            'queries': [{
+                'name': query_name,
+                'sql': query_sql,
+            } for query_name, query_sql in (metadata.get('queries') or {}).items()],
         }, {
             'database_hash': hash,
             'show_hidden': request.args.get('_show_hidden'),
-        }
-
-    async def custom_sql(self, request, name, hash):
-        params = request.raw_args
-        sql = params.pop('sql')
-        validate_sql_select(sql)
-
-        # Extract any :named parameters
-        named_parameters = self.re_named_parameter.findall(sql)
-        named_parameter_values = {
-            named_parameter: params.get(named_parameter) or ''
-            for named_parameter in named_parameters
-        }
-
-        # Set to blank string if missing from params
-        for named_parameter in named_parameters:
-            if named_parameter not in params:
-                params[named_parameter] = ''
-
-        extra_args = {}
-        if params.get('_sql_time_limit_ms'):
-            extra_args['custom_time_limit'] = int(params['_sql_time_limit_ms'])
-        rows, truncated, description = await self.execute(
-            name, sql, params, truncate=True, **extra_args
-        )
-        columns = [r[0] for r in description]
-        return {
-            'database': name,
-            'rows': rows,
-            'truncated': truncated,
-            'columns': columns,
-            'query': {
-                'sql': sql,
-                'params': params,
-            }
-        }, {
-            'database_hash': hash,
-            'custom_sql': True,
-            'named_parameter_values': named_parameter_values,
-        }
+            'editable': True,
+            'metadata': self.ds.metadata.get(
+                'databases', {}
+            ).get(name, {}),
+        }, ('database-{}.html'.format(to_css_class(name)), 'database.html')
 
 
 class DatabaseDownload(BaseView):
@@ -374,12 +416,17 @@ class DatabaseDownload(BaseView):
 
 
 class RowTableShared(BaseView):
-    async def make_display_rows(self, database, database_hash, table, rows, display_columns, pks, is_view, use_rowid):
-        # Get fancy with foreign keys
-        expanded = {}
-        tables = self.ds.inspect()[database]['tables']
+    async def display_columns_and_rows(self, database, table, description, rows, link_column=False, expand_foreign_keys=True):
+        "Returns columns, rows for specified table - including fancy foreign key treatment"
+        info = self.ds.inspect()[database]
+        columns = [r[0] for r in description]
+        tables = info['tables']
         table_info = tables.get(table) or {}
-        if table_info and not is_view:
+        pks = await self.pks_for_table(database, table)
+
+        # Prefetch foreign key resolutions for later expansion:
+        expanded = {}
+        if table_info and expand_foreign_keys:
             foreign_keys = table_info['foreign_keys']['outgoing']
             for fk in foreign_keys:
                 label_column = tables.get(fk['other_table'], {}).get('label_column')
@@ -402,58 +449,60 @@ class RowTableShared(BaseView):
                     for id, value in results:
                         expanded[(fk['column'], id)] = (fk['other_table'], value)
 
-        to_return = []
+        cell_rows = []
         for row in rows:
             cells = []
             # Unless we are a view, the first column is a link - either to the rowid
             # or to the simple or compound primary key
-            if not is_view:
-                display_value = jinja2.Markup(
-                    '<a href="/{database}-{database_hash}/{table}/{flat_pks}">{flat_pks}</a>'.format(
-                        database=database,
-                        database_hash=database_hash,
-                        table=urllib.parse.quote_plus(table),
-                        flat_pks=path_from_row_pks(row, pks, use_rowid),
-                    )
-                )
+            if link_column:
                 cells.append({
-                    'column': 'rowid' if use_rowid else 'Link',
-                    'value': display_value,
+                    'column': 'Link',
+                    'value': jinja2.Markup(
+                        '<a href="/{database}/{table}/{flat_pks}">{flat_pks}</a>'.format(
+                            database=database,
+                            table=urllib.parse.quote_plus(table),
+                            flat_pks=path_from_row_pks(row, pks, not pks),
+                        )
+                    ),
                 })
-
-            for value, column in zip(row, display_columns):
-                if use_rowid and column == 'rowid':
-                    # We already showed this in the linked first column
-                    continue
-                elif (column, value) in expanded:
+            for value, column in zip(row, columns):
+                if (column, value) in expanded:
                     other_table, label = expanded[(column, value)]
                     display_value = jinja2.Markup(
-                        # TODO: Escape id/label/etc so no XSS here
-                        '<a href="/{database}-{database_hash}/{table}/{id}">{label}</a>&nbsp;<em>{id}</em>'.format(
+                        '<a href="/{database}/{table}/{id}">{label}</a>&nbsp;<em>{id}</em>'.format(
                             database=database,
-                            database_hash=database_hash,
                             table=urllib.parse.quote_plus(other_table),
-                            id=value,
-                            label=label,
+                            id=str(jinja2.escape(value)),
+                            label=str(jinja2.escape(label)),
                         )
                     )
                 elif value is None:
                     display_value = jinja2.Markup('&nbsp;')
+                elif is_url(str(value).strip()):
+                    display_value = jinja2.Markup(
+                        '<a href="{url}">{url}</a>'.format(
+                            url=jinja2.escape(value.strip())
+                        )
+                    )
                 else:
                     display_value = str(value)
                 cells.append({
                     'column': column,
                     'value': display_value,
                 })
-            to_return.append(cells)
-        return to_return
+            cell_rows.append(cells)
+
+        if link_column:
+            columns = ['Link'] + columns
+        return columns, cell_rows
 
 
 class TableView(RowTableShared):
-    template = 'table.html'
-
     async def data(self, request, name, hash, table):
         table = urllib.parse.unquote_plus(table)
+        canned_query = self.ds.get_canned_query(name, table)
+        if canned_query is not None:
+            return await self.custom_sql(request, name, hash, canned_query['sql'], editable=False, canned_query=table)
         pks = await self.pks_for_table(name, table)
         is_view = bool(list(await self.execute(name, "SELECT count(*) from sqlite_master WHERE type = 'view' and name=:n", {
             'n': table,
@@ -596,9 +645,9 @@ class TableView(RowTableShared):
         columns = [r[0] for r in description]
         rows = list(rows)
 
-        display_columns = columns
-        if not use_rowid and not is_view:
-            display_columns = ['Link'] + display_columns
+        filter_columns = columns[:]
+        if use_rowid and filter_columns[0] == 'rowid':
+            filter_columns = filter_columns[1:]
 
         info = self.ds.inspect()
         table_rows = None
@@ -616,6 +665,7 @@ class TableView(RowTableShared):
             next_url = urllib.parse.urljoin(request.url, path_with_added_args(request, {
                 '_next': next_value,
             }))
+            rows = rows[:self.page_size]
 
         # Number of filtered rows in whole set:
         filtered_table_rows = None
@@ -638,6 +688,9 @@ class TableView(RowTableShared):
         human_description = filters.human_description(extra=search_description)
 
         async def extra_template():
+            display_columns, display_rows = await self.display_columns_and_rows(
+                name, table, description, rows, link_column=not is_view, expand_foreign_keys=True
+            )
             return {
                 'database_hash': hash,
                 'human_filter_description': human_description,
@@ -646,7 +699,16 @@ class TableView(RowTableShared):
                 'use_rowid': use_rowid,
                 'filters': filters,
                 'display_columns': display_columns,
-                'display_rows': await self.make_display_rows(name, hash, table, rows, display_columns, pks, is_view, use_rowid),
+                'filter_columns': filter_columns,
+                'display_rows': display_rows,
+                'custom_rows_and_columns_templates': [
+                    '_rows_and_columns-{}-{}.html'.format(to_css_class(name), to_css_class(table)),
+                    '_rows_and_columns-table-{}-{}.html'.format(to_css_class(name), to_css_class(table)),
+                    '_rows_and_columns.html',
+                ],
+                'metadata': self.ds.metadata.get(
+                    'databases', {}
+                ).get(name, {}).get('tables', {}).get(table, {}),
             }
 
         return {
@@ -667,12 +729,13 @@ class TableView(RowTableShared):
             },
             'next': next_value and str(next_value) or None,
             'next_url': next_url,
-        }, extra_template
+        }, extra_template, (
+            'table-{}-{}.html'.format(to_css_class(name), to_css_class(table)),
+            'table.html'
+        )
 
 
 class RowView(RowTableShared):
-    template = 'row.html'
-
     async def data(self, request, name, hash, table, pk_path):
         table = urllib.parse.unquote_plus(table)
         pk_values = compound_pks_from_path(pk_path)
@@ -700,11 +763,22 @@ class RowView(RowTableShared):
             raise NotFound('Record not found: {}'.format(pk_values))
 
         async def template_data():
+            display_columns, display_rows = await self.display_columns_and_rows(
+                name, table, description, rows, link_column=False, expand_foreign_keys=True
+            )
             return {
                 'database_hash': hash,
                 'foreign_key_tables': await self.foreign_key_tables(name, table, pk_values),
-                'display_columns': columns,
-                'display_rows': await self.make_display_rows(name, hash, table, rows, columns, pks, False, use_rowid),
+                'display_columns': display_columns,
+                'display_rows': display_rows,
+                'custom_rows_and_columns_templates': [
+                    '_rows_and_columns-{}-{}.html'.format(to_css_class(name), to_css_class(table)),
+                    '_rows_and_columns-row-{}-{}.html'.format(to_css_class(name), to_css_class(table)),
+                    '_rows_and_columns.html',
+                ],
+                'metadata': self.ds.metadata.get(
+                    'databases', {}
+                ).get(name, {}).get('tables', {}).get(table, {}),
             }
 
         data = {
@@ -719,7 +793,10 @@ class RowView(RowTableShared):
         if 'foreign_key_tables' in (request.raw_args.get('_extras') or '').split(','):
             data['foreign_key_tables'] = await self.foreign_key_tables(name, table, pk_values)
 
-        return data, template_data
+        return data, template_data, (
+            'row-{}-{}.html'.format(to_css_class(name), to_css_class(table)),
+            'row.html'
+        )
 
     async def foreign_key_tables(self, name, table, pk_values):
         if len(pk_values) != 1:
@@ -757,7 +834,8 @@ class Datasette:
     def __init__(
             self, files, num_threads=3, cache_headers=True, page_size=100,
             max_returned_rows=1000, sql_time_limit_ms=1000, cors=False,
-            inspect_data=None, metadata=None, sqlite_extensions=None):
+            inspect_data=None, metadata=None, sqlite_extensions=None,
+            template_dir=None, static_mounts=None):
         self.files = files
         self.num_threads = num_threads
         self.executor = futures.ThreadPoolExecutor(
@@ -772,6 +850,47 @@ class Datasette:
         self.metadata = metadata or {}
         self.sqlite_functions = []
         self.sqlite_extensions = sqlite_extensions or []
+        self.template_dir = template_dir
+        self.static_mounts = static_mounts or []
+
+    def app_css_hash(self):
+        if not hasattr(self, '_app_css_hash'):
+            self._app_css_hash = hashlib.sha1(
+                open(os.path.join(str(app_root), 'datasette/static/app.css')).read().encode('utf8')
+            ).hexdigest()[:6]
+        return self._app_css_hash
+
+    def get_canned_query(self, database_name, query_name):
+        query = self.metadata.get(
+            'databases', {}
+        ).get(
+            database_name, {}
+        ).get(
+            'queries', {}
+        ).get(query_name)
+        if query:
+            return {
+                'name': query_name,
+                'sql': query,
+            }
+
+    def asset_urls(self, key):
+        for url_or_dict in (self.metadata.get(key) or []):
+            if isinstance(url_or_dict, dict):
+                yield {
+                    'url': url_or_dict['url'],
+                    'sri': url_or_dict.get('sri'),
+                }
+            else:
+                yield {
+                    'url': url_or_dict,
+                }
+
+    def extra_css_urls(self):
+        return self.asset_urls('extra_css_urls')
+
+    def extra_js_urls(self):
+        return self.asset_urls('extra_js_urls')
 
     def prepare_connection(self, conn):
         conn.row_factory = sqlite3.Row
@@ -860,20 +979,31 @@ class Datasette:
 
     def app(self):
         app = Sanic(__name__)
-        self.jinja = SanicJinja2(
-            app,
-            loader=FileSystemLoader([
-                str(app_root / 'datasette' / 'templates')
-            ]),
+        default_templates = str(app_root / 'datasette' / 'templates')
+        if self.template_dir:
+            template_loader = ChoiceLoader([
+                FileSystemLoader([self.template_dir, default_templates]),
+                # Support {% extends "default:table.html" %}:
+                PrefixLoader({
+                    'default': FileSystemLoader(default_templates),
+                }, delimiter=':')
+            ])
+        else:
+            template_loader = FileSystemLoader(default_templates)
+        self.jinja_env = Environment(
+            loader=template_loader,
             autoescape=True,
         )
-        self.jinja.add_env('escape_css_string', escape_css_string, 'filters')
-        self.jinja.add_env('quote_plus', lambda u: urllib.parse.quote_plus(u), 'filters')
-        self.jinja.add_env('escape_table_name', escape_sqlite_table_name, 'filters')
+        self.jinja_env.filters['escape_css_string'] = escape_css_string
+        self.jinja_env.filters['quote_plus'] = lambda u: urllib.parse.quote_plus(u)
+        self.jinja_env.filters['escape_table_name'] = escape_sqlite_table_name
+        self.jinja_env.filters['to_css_class'] = to_css_class
         app.add_route(IndexView.as_view(self), '/<as_json:(.jsono?)?$>')
         # TODO: /favicon.ico and /-/static/ deserve far-future cache expires
         app.add_route(favicon, '/favicon.ico')
         app.static('/-/static/', str(app_root / 'datasette' / 'static'))
+        for path, dirname in self.static_mounts:
+            app.static(path, dirname)
         app.add_route(
             DatabaseView.as_view(self),
             '/<db_name:[^/\.]+?><as_json:(.jsono?)?$>'

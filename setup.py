@@ -14,9 +14,8 @@ setup(
     install_requires=[
         'click==6.7',
         'click-default-group==1.2',
-        'Sanic==0.6.0',
+        'Sanic==0.7.0',
         'Jinja2==2.10',
-        'sanic-jinja2==0.5.5',
         'hupper==1.0',
     ],
     entry_points='''
@@ -27,6 +26,7 @@ setup(
     tests_require=[
         'pytest==3.2.1',
         'aiohttp==2.3.2',
+        'beautifulsoup4==4.6.0',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',

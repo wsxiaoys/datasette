@@ -4,6 +4,7 @@
     {% if human_filter_description %}where {{ human_filter_description }}{% endif %}{% endblock %}
 
 {% block extra_head %}
+{{ super() }}
 <style>
 @media only screen and (max-width: 576px) {
 {% for column in display_columns %}
@@ -13,10 +14,14 @@
 </style>
 {% endblock %}
 
+{% block body_class %}table db-{{ database|to_css_class }} table-{{ table|to_css_class }}{% endblock %}
+
 {% block content %}
 <div class="hd"><a href="/">home</a> / <a href="/{{ database }}-{{ database_hash }}">{{ database }}</a></div>
 
-<h1 style="padding-left: 10px; border-left: 10px solid #{{ database_hash[:6] }}">{{ table }}{% if is_view %} (view){% endif %}</h1>
+<h1 style="padding-left: 10px; border-left: 10px solid #{{ database_hash[:6] }}">{{ metadata.title or table }}{% if is_view %} (view){% endif %}</h1>
+
+{% block description_source_license %}{% include "_description_source_license.html" %}{% endblock %}
 
 {% if filtered_table_rows or human_filter_description %}
     <h3>{% if filtered_table_rows or filtered_table_rows == 0 %}{{ "{:,}".format(filtered_table_rows) }} row{% if filtered_table_rows == 1 %}{% else %}s{% endif %}{% endif %}
@@ -33,10 +38,8 @@
             <div class="select-wrapper">
                 <select name="_filter_column_{{ loop.index }}">
                     <option value="">- remove filter -</option>
-                    {% for c in display_columns %}
-                        {% if c != 'rowid' %}
-                            <option{% if c == column %} selected{% endif %}>{{ c }}</option>
-                        {% endif %}
+                    {% for c in filter_columns %}
+                          <option{% if c == column %} selected{% endif %}>{{ c }}</option>
                     {% endfor %}
                 </select>
             </div><div class="select-wrapper filter-op">
@@ -52,10 +55,8 @@
         <div class="select-wrapper">
             <select name="_filter_column">
                 <option value="">- column -</option>
-                {% for column in display_columns %}
-                    {% if column != 'rowid' %}
-                        <option>{{ column }}</option>
-                    {% endif %}
+                {% for column in filter_columns %}
+                      <option>{{ column }}</option>
                 {% endfor %}
             </select>
         </div><div class="select-wrapper filter-op">
@@ -75,7 +76,7 @@
 
 <p>This data as <a href="{{ url_json }}">.json</a>, <a href="{{ url_jsono }}">.jsono</a></p>
 
-{% include "_rows_and_columns.html" %}
+{% include custom_rows_and_columns_templates %}
 
 {% if next_url %}
      <p><a href="{{ next_url }}">Next page</a></p>
