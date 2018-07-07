@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ database }}{% if query and query.sql %}{{ query.sql }}{% endif %}{% endblock %}
+{% block title %}{{ database }}{% if query and query.sql %}: {{ query.sql }}{% endif %}{% endblock %}
 
 {% block extra_head %}
 {{ super() }}
@@ -8,7 +8,7 @@
 <style>
 @media only screen and (max-width: 576px) {
 {% for column in columns %}
-    td:nth-of-type({{ loop.index }}):before { content: "{{ column|escape_css_string }}"; }
+    .rows-and-columns td:nth-of-type({{ loop.index }}):before { content: "{{ column|escape_css_string }}"; }
 {% endfor %}
 }
 </style>
@@ -25,8 +25,8 @@
 
 <form class="sql" action="/{{ database }}-{{ database_hash }}{% if canned_query %}/{{ canned_query }}{% endif %}" method="get">
     <h3>Custom SQL query{% if rows %} returning {% if truncated %}more than {% endif %}{{ "{:,}".format(rows|length) }} row{% if rows|length == 1 %}{% else %}s{% endif %}{% endif %}</h3>
-    {% if editable %}
-        <p><textarea name="sql">{% if query and query.sql %}{{ query.sql }}{% else %}select * from {{ tables[0].name|escape_table_name }}{% endif %}</textarea></p>
+    {% if editable and config.allow_sql %}
+        <p><textarea name="sql">{% if query and query.sql %}{{ query.sql }}{% else %}select * from {{ tables[0].name|escape_sqlite }}{% endif %}</textarea></p>
     {% else %}
         <pre>{% if query %}{{ query.sql }}{% endif %}</pre>
     {% endif %}
@@ -40,18 +40,18 @@
 </form>
 
 {% if rows %}
-<p>This data as <a href="{{ url_json }}">.json</a>, <a href="{{ url_jsono }}">.jsono</a></p>
-<table>
+<p class="export-links">This data as <a href="{{ url_json }}">JSON</a>, <a href="{{ url_csv }}">CSV</a></p>
+<table class="rows-and-columns">
     <thead>
         <tr>
-            {% for column in columns %}<th scope="col">{{ column }}</th>{% endfor %}
+            {% for column in columns %}<th class="col-{{ column|to_css_class }}" scope="col">{{ column }}</th>{% endfor %}
         </tr>
     </thead>
     <tbody>
     {% for row in rows %}
         <tr>
-            {% for td in row %}
-                <td>{% if td == None %}{{ "&nbsp;"|safe }}{% else %}{{ td }}{% endif %}</td>
+            {% for column, td in zip(columns, row) %}
+                <td class="col-{{ column|to_css_class }}">{% if td == None %}{{ "&nbsp;"|safe }}{% else %}{{ td }}{% endif %}</td>
             {% endfor %}
         </tr>
     {% endfor %}

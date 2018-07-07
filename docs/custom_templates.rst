@@ -1,5 +1,7 @@
-Customizing Datasette's appearance
-==================================
+.. _customization:
+
+Customization
+=============
 
 Datasette provides a number of ways of customizing the way data is displayed.
 
@@ -41,7 +43,7 @@ You can also specify a SRI (subresource integrity hash) for these assets::
     }
 
 Modern browsers will only execute the stylesheet or JavaScript if the SRI hash
-matches the content served. You can generate hashes using www.srihash.org
+matches the content served. You can generate hashes using `www.srihash.org <https://www.srihash.org/>`_
 
 Every default template includes CSS classes in the body designed to support
 custom styling.
@@ -66,7 +68,7 @@ The row template (``/dbname/tablename/rowid``) gets::
 
     <body class="row db-dbname table-tablename">
 
-The ``db-x`` and ``table-x`` classes use the database or table names themselves IF
+The ``db-x`` and ``table-x`` classes use the database or table names themselves if
 they are valid CSS identifiers. If they aren't, we strip any invalid
 characters out and append a 6 character md5 digest of the original name, in
 order to ensure that multiple tables which resolve to the same stripped
@@ -82,6 +84,23 @@ Some examples::
     "-" => "336d5e"
     "no $ characters" => "no--characters-59e024"
 
+``<td>`` and ``<th>`` elements also get custom CSS classes reflecting the
+database column they are representing, for example::
+
+    <table>
+        <thead>
+            <tr>
+                <th class="col-id" scope="col">id</th>
+                <th class="col-name" scope="col">name</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="col-id"><a href="...">1</a></td>
+                <td class="col-name">SMITH</td>
+            </tr>
+        </tbody>
+    </table>
 
 Custom templates
 ----------------
@@ -171,26 +190,8 @@ Note the ``default:row.html`` template name, which ensures Jinja will inherit
 from the default template.
 
 The ``_rows_and_columns.html`` template is included on both the row and the table
-page, and displays the content of the row. The default template looks like this::
-
-    <table>
-        <thead>
-            <tr>
-                {% for column in display_columns %}
-                    <th scope="col">{{ column }}</th>
-                {% endfor %}
-            </tr>
-        </thead>
-        <tbody>
-        {% for row in display_rows %}
-            <tr>
-                {% for cell in row %}
-                    <td>{{ cell.value }}</td>
-                {% endfor %}
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
+page, and displays the content of the row. The default ``_rows_and_columns.html`` template
+`can be seen here <https://github.com/simonw/datasette/blob/master/datasette/templates/_rows_and_columns.html>`_.
 
 You can provide a custom template that applies to all of your databases and
 tables, or you can provide custom templates for specific tables using the
@@ -213,7 +214,7 @@ provide a custom ``_rows_and_columns.html`` template like this::
                 {% for cell in row %}
                     <td>
                         {% if cell.column == 'description' %}
-                            !!{{ cell.value|safe }}
+                            {{ cell.value|safe }}
                         {% else %}
                             {{ cell.value }}
                         {% endif %}

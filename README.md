@@ -1,19 +1,39 @@
 # Datasette
 
-[![PyPI](https://img.shields.io/pypi/v/datasette.svg)](https://pypi.python.org/pypi/datasette)
+[![PyPI](https://img.shields.io/pypi/v/datasette.svg)](https://pypi.org/project/datasette/)
 [![Travis CI](https://travis-ci.org/simonw/datasette.svg?branch=master)](https://travis-ci.org/simonw/datasette)
 [![Documentation Status](https://readthedocs.org/projects/datasette/badge/?version=latest)](http://datasette.readthedocs.io/en/latest/?badge=latest)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/simonw/datasette/blob/master/LICENSE)
 
 *An instant JSON API for your SQLite databases*
 
 Datasette provides an instant, read-only JSON API for any SQLite database. It also provides tools  for packaging the database up as a Docker container and deploying that container to hosting providers such as [Zeit Now](https://zeit.co/now).
 
-Got CSV data? Use [csvs-to-sqlite](https://github.com/simonw/csvs-to-sqlite) to convert them to SOLite, then publish them with Datasette.
+Got CSV data? Use [csvs-to-sqlite](https://github.com/simonw/csvs-to-sqlite) to convert them to SQLite, then publish them with Datasette. Or try [Datasette Publish](https://publish.datasettes.com), a web app that lets you upload CSV data and deploy it using Datasette without needing to install any software.
 
-Some examples: https://github.com/simonw/datasette/wiki/Datasettes
+* Documentation: http://datasette.readthedocs.io/
+* Examples: https://github.com/simonw/datasette/wiki/Datasettes
+* Live demo of current master: https://latest.datasette.io/
 
 ## News
 
+* 29th June 2018: [datasette-vega](https://github.com/simonw/datasette-vega), a new plugin for visualizing data as bar, line or scatter charts
+* 21st June 2018: [Datasette 0.23.1](http://datasette.readthedocs.io/en/latest/changelog.html#v0-23-1) - minor bug fixes
+* 18th June 2018: [Datasette 0.23: CSV, SpatiaLite and more](http://datasette.readthedocs.io/en/latest/changelog.html#v0-23) - CSV export, foreign key expansion in JSON and CSV, new config options, improved support for SpatiaLite and a bunch of other improvements
+* 23rd May 2018: [Datasette 0.22.1 bugfix](https://github.com/simonw/datasette/releases/tag/0.22.1) plus we now use [versioneer](https://github.com/warner/python-versioneer)
+* 20th May 2018: [Datasette 0.22: Datasette Facets](https://simonwillison.net/2018/May/20/datasette-facets)
+* 5th May 2018: [Datasette 0.21: New _shape=, new _size=, search within columns](https://github.com/simonw/datasette/releases/tag/0.21)
+* 25th April 2018: [Exploring the UK Register of Members Interests with SQL and Datasette](https://simonwillison.net/2018/Apr/25/register-members-interests/) - a tutorial describing how [register-of-members-interests.datasettes.com](https://register-of-members-interests.datasettes.com/) was built ([source code here](https://github.com/simonw/register-of-members-interests))
+* 20th April 2018: [Datasette plugins, and building a clustered map visualization](https://simonwillison.net/2018/Apr/20/datasette-plugins/) - introducing Datasette's new plugin system and [datasette-cluster-map](https://pypi.org/project/datasette-cluster-map/), a plugin for visualizing data on a map
+* 20th April 2018: [Datasette 0.20: static assets and templates for plugins](https://github.com/simonw/datasette/releases/tag/0.20)
+* 16th April 2018: [Datasette 0.19: plugins preview](https://github.com/simonw/datasette/releases/tag/0.19)
+* 14th April 2018: [Datasette 0.18: units](https://github.com/simonw/datasette/releases/tag/0.18)
+* 9th April 2018: [Datasette 0.15: sort by column](https://github.com/simonw/datasette/releases/tag/0.15)
+* 28th March 2018: [Baltimore Sun Public Salary Records](https://simonwillison.net/2018/Mar/28/datasette-in-the-wild/) - a data journalism project from the Baltimore Sun powered by Datasette - source code [is available here](https://github.com/baltimore-sun-data/salaries-datasette)
+* 27th March 2018: [Cloud-first: Rapid webapp deployment using containers](https://wwwf.imperial.ac.uk/blog/research-software-engineering/2018/03/27/cloud-first-rapid-webapp-deployment-using-containers/) - a tutorial covering deploying Datasette using Microsoft Azure by the Research Software Engineering team at Imperial College London
+* 28th January 2018: [Analyzing my Twitter followers with Datasette](https://simonwillison.net/2018/Jan/28/analyzing-my-twitter-followers/) - a tutorial on using Datasette to analyze follower data pulled from the Twitter API
+* 17th January 2018: [Datasette Publish: a web app for publishing CSV files as an online database](https://simonwillison.net/2018/Jan/17/datasette-publish/)
+* 12th December 2017: [Building a location to time zone API with SpatiaLite, OpenStreetMap and Datasette](https://simonwillison.net/2017/Dec/12/building-a-location-time-zone-api/)
 * 9th December 2017: [Datasette 0.14: customization edition](https://github.com/simonw/datasette/releases/tag/0.14)
 * 25th November 2017: [New in Datasette: filters, foreign keys and search](https://simonwillison.net/2017/Nov/25/new-in-datasette/)
 * 13th November 2017: [Datasette: instantly create and publish an API for your SQLite databases](https://simonwillison.net/2017/Nov/13/datasette/)
@@ -53,7 +73,7 @@ http://localhost:8001/History/downloads.json will return that data as JSON:
             "total_bytes",
             ...
         ],
-        "table_rows": 576,
+        "table_rows_count": 576,
         "rows": [
             [
                 1,
@@ -68,7 +88,7 @@ http://localhost:8001/History/downloads.json will return that data as JSON:
     }
 
 
-http://localhost:8001/History/downloads.jsono will return that data as JSON in a more convenient but less efficient format:
+http://localhost:8001/History/downloads.json?_shape=objects will return that data as JSON in a more convenient but less efficient format:
 
     {
         ...
@@ -100,18 +120,18 @@ http://localhost:8001/History/downloads.jsono will return that data as JSON in a
                                    useful for development
       --cors                       Enable CORS by serving Access-Control-Allow-
                                    Origin: *
-      --page_size INTEGER          Page size - default is 100
-      --max_returned_rows INTEGER  Max allowed rows to return at once - default is
-                                   1000. Set to 0 to disable check entirely.
-      --sql_time_limit_ms INTEGER  Max time allowed for SQL queries in ms
       --load-extension PATH        Path to a SQLite extension to load
       --inspect-file TEXT          Path to JSON file created using "datasette
                                    inspect"
       -m, --metadata FILENAME      Path to JSON file containing license/source
                                    metadata
       --template-dir DIRECTORY     Path to directory containing custom templates
+      --plugins-dir DIRECTORY      Path to directory containing custom plugins
       --static STATIC MOUNT        mountpoint:path-to-directory for serving static
                                    files
+      --config CONFIG              Set config option using configname:value
+                                   datasette.readthedocs.io/en/latest/config.html
+      --help-config                Show available config options
       --help                       Show this message and exit.
 
 ## metadata.json
@@ -159,9 +179,14 @@ This will create a docker image containing both the datasette application and th
       --extra-options TEXT      Extra options to pass to datasette serve
       --force                   Pass --force option to now
       --branch TEXT             Install datasette from a GitHub branch e.g. master
+      --token TEXT              Auth token to use for deploy (Now only)
       --template-dir DIRECTORY  Path to directory containing custom templates
+      --plugins-dir DIRECTORY   Path to directory containing custom plugins
       --static STATIC MOUNT     mountpoint:path-to-directory for serving static
                                 files
+      --install TEXT            Additional packages (e.g. plugins) to install
+      --spatialite              Enable SpatialLite extension
+      --version-note TEXT       Additional note to show on /-/versions
       --title TEXT              Title for metadata
       --license TEXT            License label for metadata
       --license_url TEXT        License URL for metadata
@@ -185,8 +210,12 @@ If you have docker installed you can use `datasette package` to create a new Doc
       --extra-options TEXT      Extra options to pass to datasette serve
       --branch TEXT             Install datasette from a GitHub branch e.g. master
       --template-dir DIRECTORY  Path to directory containing custom templates
+      --plugins-dir DIRECTORY   Path to directory containing custom plugins
       --static STATIC MOUNT     mountpoint:path-to-directory for serving static
                                 files
+      --install TEXT            Additional packages (e.g. plugins) to install
+      --spatialite              Enable SpatialLite extension
+      --version-note TEXT       Additional note to show on /-/versions
       --title TEXT              Title for metadata
       --license TEXT            License label for metadata
       --license_url TEXT        License URL for metadata
@@ -196,13 +225,14 @@ If you have docker installed you can use `datasette package` to create a new Doc
 
 Both publish and package accept an `extra_options` argument option, which will affect how the resulting application is executed. For example, say you want to increase the SQL time limit for a particular container:
 
-    datasette package parlgov.db --extra-options="--sql_time_limit_ms=2500 --page_size=10"
+    datasette package parlgov.db \
+        --extra-options="--config sql_time_limit_ms:2500 --config default_page_size:10"
 
 The resulting container will run the application with those options.
 
 Here's example output for the package command:
 
-    $ datasette package parlgov.db --extra-options="--sql_time_limit_ms=2500 --page_size=10"
+    $ datasette package parlgov.db --extra-options="--config sql_time_limit_ms:2500"
     Sending build context to Docker daemon  4.459MB
     Step 1/7 : FROM python:3
      ---> 79e1dc9af1c1
@@ -221,7 +251,7 @@ Here's example output for the package command:
     Step 6/7 : EXPOSE 8001
      ---> Using cache
      ---> 8e83844b0fed
-    Step 7/7 : CMD datasette serve parlgov.db --port 8001 --inspect-file inspect-data.json --sql_time_limit_ms=2500 --page_size=10
+    Step 7/7 : CMD datasette serve parlgov.db --port 8001 --inspect-file inspect-data.json --config sql_time_limit_ms:2500
      ---> Using cache
      ---> 1bd380ea8af3
     Successfully built 1bd380ea8af3

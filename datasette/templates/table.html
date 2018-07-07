@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}{{ database }}: {{ table }}: {% if filtered_table_rows or filtered_table_rows == 0 %}{{ "{:,}".format(filtered_table_rows) }} row{% if filtered_table_rows == 1 %}{% else %}s{% endif %}{% endif %}
-    {% if human_filter_description %}where {{ human_filter_description }}{% endif %}{% endblock %}
+{% block title %}{{ database }}: {{ table }}: {% if filtered_table_rows_count or filtered_table_rows_count == 0 %}{{ "{:,}".format(filtered_table_rows_count) }} row{% if filtered_table_rows_count == 1 %}{% else %}s{% endif %}{% endif %}
+    {% if human_description_en %}where {{ human_description_en }}{% endif %}{% endblock %}
 
 {% block extra_head %}
 {{ super() }}
 <style>
 @media only screen and (max-width: 576px) {
 {% for column in display_columns %}
-    td:nth-of-type({{ loop.index }}):before { content: "{{ column|escape_css_string }}"; }
+    .rows-and-columns td:nth-of-type({{ loop.index }}):before { content: "{{ column.name|escape_css_string }}"; }
 {% endfor %}
 }
 </style>
@@ -23,9 +23,9 @@
 
 {% block description_source_license %}{% include "_description_source_license.html" %}{% endblock %}
 
-{% if filtered_table_rows or human_filter_description %}
-    <h3>{% if filtered_table_rows or filtered_table_rows == 0 %}{{ "{:,}".format(filtered_table_rows) }} row{% if filtered_table_rows == 1 %}{% else %}s{% endif %}{% endif %}
-        {% if human_filter_description %}where {{ human_filter_description }}{% endif %}
+{% if filtered_table_rows_count or human_description_en %}
+    <h3>{% if filtered_table_rows_count or filtered_table_rows_count == 0 %}{{ "{:,}".format(filtered_table_rows_count) }} row{% if filtered_table_rows_count == 1 %}{% else %}s{% endif %}{% endif %}
+        {% if human_description_en %}{{ human_description_en }}{% endif %}
     </h3>
 {% endif %}
 
@@ -66,7 +66,25 @@
                 {% endfor %}
             </select>
         </div><input type="text" name="_filter_value" class="filter-value">
-        <input type="submit" value="{% if filters.has_selections() %}Apply filters{% else %}Add filter{% endif %}">
+    </div>
+    <div class="filter-row">
+        {% if is_sortable %}
+            <div class="select-wrapper small-screen-only">
+                <select name="_sort" id="sort_by">
+                    <option value="">Sort...</option>
+                    {% for column in display_columns %}
+                        {% if column.sortable %}
+                            <option value="{{ column.name }}"{% if column.name == sort or column.name == sort_desc %} selected{% endif %}>Sort by {{ column.name }}</option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <label class="sort_by_desc small-screen-only"><input type="checkbox" name="_sort_by_desc"{% if sort_desc %} checked{% endif %}> descending</label>
+        {% endif %}
+        {% for facet in sorted_facet_results %}
+            <input type="hidden" name="_facet" value="{{ facet.name }}">
+        {% endfor %}
+        <input type="submit" value="Apply">
     </div>
 </form>
 
@@ -74,12 +92,70 @@
     <p><a class="not-underlined" title="{{ query.sql }}" href="/{{ database }}-{{ database_hash }}?{{ {'sql': query.sql}|urlencode|safe }}{% if query.params %}&amp;{{ query.params|urlencode|safe }}{% endif %}">&#x270e; <span class="underlined">View and edit SQL</span></a></p>
 {% endif %}
 
-<p>This data as <a href="{{ url_json }}">.json</a>, <a href="{{ url_jsono }}">.jsono</a></p>
+<p class="export-links">This data as <a href="{{ url_json }}">JSON</a>{% if display_rows %}, <a href="{{ url_csv }}">CSV</a> (<a href="#export">advanced</a>){% endif %}</p>
+
+{% if suggested_facets %}
+    <p class="suggested-facets">
+        Suggested facets: {% for facet in suggested_facets %}<a href="{{ facet.toggle_url }}#facet-{{ facet.name|to_css_class }}">{{ facet.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+{% endif %}
+
+{% if facets_timed_out %}
+    <p class="facets-timed-out">These facets timed out: {{ ", ".join(facets_timed_out) }}</p>
+{% endif %}
+
+{% if facet_results %}
+    <div class="facet-results">
+        {% for facet_info in sorted_facet_results %}
+            <div class="facet-info facet-{{ database|to_css_class }}-{{ table|to_css_class }}-{{ facet_info.name|to_css_class }}" id="facet-{{ facet_info.name|to_css_class }}">
+                <p class="facet-info-name">
+                    <strong>{{ facet_info.name }}</strong>
+                    {% if facet_hideable(facet_info.name) %}
+                        <a href="{{ path_with_removed_args(request, {'_facet': facet_info['name']}) }}" class="cross">&#x2716;</a>
+                    {% endif %}
+                </p>
+                <ul>
+                    {% for facet_value in facet_info.results %}
+                        {% if not facet_value.selected %}
+                            <li><a href="{{ facet_value.toggle_url }}">{{ (facet_value.label if facet_value.label is not none else "_") }}</a> {{ "{:,}".format(facet_value.count) }}</li>
+                        {% else %}
+                            <li>{{ facet_value.label }} &middot; {{ "{:,}".format(facet_value.count) }} <a href="{{ facet_value.toggle_url }}" class="cross">&#x2716;</a></li>
+                        {% endif %}
+                    {% endfor %}
+                    {% if facet_info.truncated %}
+                        <li>...</li>
+                    {% endif %}
+                </ul>
+            </div>
+        {% endfor %}
+    </div>
+{% endif %}
 
 {% include custom_rows_and_columns_templates %}
 
 {% if next_url %}
      <p><a href="{{ next_url }}">Next page</a></p>
+{% endif %}
+
+{% if display_rows %}
+    <div id="export" class="advanced-export">
+        <h3>Advanced export</h3>
+        <p>JSON shape: <a href="{{ url_json }}">default</a>, <a href="{{ append_querystring(url_json, '_shape=array') }}">array</a>{% if primary_keys %}, <a href="{{ append_querystring(url_json, '_shape=object') }}">object</a>{% endif %}</p>
+        <form action="{{ url_csv_path }}" method="get">
+            <p>
+                CSV options:
+                <label><input type="checkbox" name="_dl"> download file</label>
+                {% if expandable_columns %}<label><input type="checkbox" name="_labels" checked> expand labels</label>{% endif %}
+                {% if next_url and config.allow_csv_stream %}<label><input type="checkbox" name="_stream"> stream all rows</label>{% endif %}
+                <input type="submit" value="Export CSV">
+                {% for key, value in url_csv_args.items() %}
+                    {% if key != "_labels" %}
+                        <input type="hidden" name="{{ key }}" value="{{ value }}">
+                    {% endif %}
+                {% endfor %}
+            </p>
+        </form>
+    </div>
 {% endif %}
 
 {% if table_definition %}

@@ -1,3 +1,5 @@
+.. _metadata:
+
 Metadata
 ========
 
@@ -55,6 +57,113 @@ You can also provide metadata at the per-database or per-table level, like this:
 
 Each of the top-level metadata fields can be used at the database and table level.
 
+Specifying units for a column
+-----------------------------
+
+Datasette supports attaching units to a column, which will be used when displaying
+values from that column. SI prefixes will be used where appropriate.
+
+Column units are configured in the metadata like so::
+
+    {
+        "databases": {
+            "database1": {
+                "tables": {
+                    "example_table": {
+                        "units": {
+                            "column1": "metres",
+                            "column2": "Hz"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+Units are interpreted using Pint_, and you can see the full list of available units in
+Pint's `unit registry`_. You can also add `custom units`_ to the metadata, which will be
+registered with Pint::
+
+    {
+        "custom_units": [
+            "decibel = [] = dB"
+        ]
+    }
+
+.. _Pint: https://pint.readthedocs.io/
+.. _unit registry: https://github.com/hgrecco/pint/blob/master/pint/default_en.txt
+.. _custom units: http://pint.readthedocs.io/en/latest/defining.html
+
+Setting which columns can be used for sorting
+---------------------------------------------
+
+Datasette allows any column to be used for sorting by default. If you need to
+control which columns are available for sorting you can do so using the optional
+``sortable_columns`` key::
+
+    {
+        "databases": {
+            "database1": {
+                "tables": {
+                    "example_table": {
+                        "sortable_columns": [
+                            "height",
+                            "weight"
+                        ]
+                    }
+                }
+            }
+        }
+    }
+
+This will restrict sorting of ``example_table`` to just the ``height`` and
+``weight`` columns.
+
+You can also disable sorting entirely by setting ``"sortable_columns": []``
+
+.. _label_columns:
+
+Specifying the label column for a table
+---------------------------------------
+
+Datasette's HTML interface attempts to display foreign key references as
+labelled hyperlinks. By default, it looks for referenced tables that only have
+two columns: a primary key column and one other. It assumes that the second
+column should be used as the link label.
+
+If your table has more than two columns you can specify which column should be
+used for the link label with the ``label_column`` property::
+
+    {
+        "databases": {
+            "database1": {
+                "tables": {
+                    "example_table": {
+                        "label_column": "title"
+                    }
+                }
+            }
+        }
+    }
+
+Hiding tables
+-------------
+
+You can hide tables from the database listing view (in the same way that FTS and
+Spatialite tables are automatically hidden) using ``"hidden": true``::
+
+    {
+        "databases": {
+            "database1": {
+                "tables": {
+                    "example_table": {
+                        "hidden": true
+                    }
+                }
+            }
+        }
+    }
+
 Generating a metadata skeleton
 ------------------------------
 
@@ -92,7 +201,8 @@ This will create a ``metadata.json`` file looking something like this::
                         "license": null,
                         "license_url": null,
                         "source": null,
-                        "source_url": null
+                        "source_url": null,
+                        "units": {}
                     }
                 }
             },

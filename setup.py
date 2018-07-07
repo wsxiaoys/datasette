@@ -1,11 +1,33 @@
 from setuptools import setup, find_packages
-from datasette import __version__
+import os
+
+import versioneer
+
+
+def get_long_description():
+    with open(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'README.md'
+    ), encoding='utf8') as fp:
+        return fp.read()
+
+
+def get_version():
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'datasette', 'version.py'
+    )
+    g = {}
+    exec(open(path).read(), g)
+    return g['__version__']
+
 
 setup(
     name='datasette',
+    version=versioneer.get_version(),
+    cmdclass=versioneer.get_cmdclass(),
     description='An instant JSON API for your SQLite databases',
+    long_description=get_long_description(),
+    long_description_content_type='text/markdown',
     author='Simon Willison',
-    version=__version__,
     license='Apache License, Version 2.0',
     url='https://github.com/simonw/datasette',
     packages=find_packages(),
@@ -17,24 +39,32 @@ setup(
         'Sanic==0.7.0',
         'Jinja2==2.10',
         'hupper==1.0',
+        'pint==0.8.1',
+        'pluggy>=0.1.0,<1.0',
     ],
     entry_points='''
         [console_scripts]
         datasette=datasette.cli:cli
     ''',
     setup_requires=['pytest-runner'],
+    extras_require={
+        'test': [
+            'pytest==3.6.0',
+            'aiohttp==2.3.2',
+            'beautifulsoup4==4.6.0',
+        ]
+    },
     tests_require=[
-        'pytest==3.2.1',
-        'aiohttp==2.3.2',
-        'beautifulsoup4==4.6.0',
+        'datasette[test]',
     ],
     classifiers=[
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 4 - Beta',
         'Intended Audience :: Developers',
         'Intended Audience :: Science/Research',
         'Intended Audience :: End Users/Desktop',
         'Topic :: Database',
         'License :: OSI Approved :: Apache Software License',
         'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.5',
     ],
 )

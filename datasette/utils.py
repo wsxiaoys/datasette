@@ -1,10 +1,13 @@
 from jinja2 import Environment
 
 from contextlib import contextmanager
+from collections import OrderedDict
 import base64
 import hashlib
+import imp
 import json
 import os
+import pkg_resources
 import re
 import shlex
 import sqlite3
@@ -12,23 +15,101 @@ import tempfile
 import time
 import shutil
 import urllib
+import numbers
 
 
-def compound_pks_from_path(path):
+# From https://www.sqlite.org/lang_keywords.html
+reserved_words = set((
+    'abort action add after all alter analyze and as asc attach autoincrement '
+    'before begin between by cascade case cast check collate column commit '
+    'conflict constraint create cross current_date current_time '
+    'current_timestamp database default deferrable deferred delete desc detach '
+    'distinct drop each else end escape except exclusive exists explain fail '
+    'for foreign from full glob group having if ignore immediate in index '
+    'indexed initially inner insert instead intersect into is isnull join key '
+    'left like limit match natural no not notnull null of offset on or order '
+    'outer plan pragma primary query raise recursive references regexp reindex '
+    'release rename replace restrict right rollback row savepoint select set '
+    'table temp temporary then to transaction trigger union unique update using '
+    'vacuum values view virtual when where with without'
+).split())
+
+SPATIALITE_DOCKERFILE_EXTRAS = r'''
+RUN apt-get update && \
+    apt-get install -y python3-dev gcc libsqlite3-mod-spatialite && \
+    rm -rf /var/lib/apt/lists/*
+ENV SQLITE_EXTENSIONS /usr/lib/x86_64-linux-gnu/mod_spatialite.so
+'''
+
+
+class InterruptedError(Exception):
+    pass
+
+
+class Results:
+    def __init__(self, rows, truncated, description):
+        self.rows = rows
+        self.truncated = truncated
+        self.description = description
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self):
+        return len(self.rows)
+
+
+def urlsafe_components(token):
+    "Splits token on commas and URL decodes each component"
     return [
-        urllib.parse.unquote_plus(b) for b in path.split(',')
+        urllib.parse.unquote_plus(b) for b in token.split(',')
     ]
 
 
-def path_from_row_pks(row, pks, use_rowid):
+def path_from_row_pks(row, pks, use_rowid, quote=True):
+    """ Generate an optionally URL-quoted unique identifier
+        for a row from its primary keys."""
     if use_rowid:
-        return urllib.parse.quote_plus(str(row['rowid']))
-    bits = []
-    for pk in pks:
-        bits.append(
-            urllib.parse.quote_plus(str(row[pk]))
-        )
+        bits = [row['rowid']]
+    else:
+        bits = [
+            row[pk]["value"] if isinstance(row[pk], dict) else row[pk]
+            for pk in pks
+        ]
+    if quote:
+        bits = [urllib.parse.quote_plus(str(bit)) for bit in bits]
+    else:
+        bits = [str(bit) for bit in bits]
+
     return ','.join(bits)
+
+
+def compound_keys_after_sql(pks, start_index=0):
+    # Implementation of keyset pagination
+    # See https://github.com/simonw/datasette/issues/190
+    # For pk1/pk2/pk3 returns:
+    #
+    # ([pk1] > :p0)
+    #   or
+    # ([pk1] = :p0 and [pk2] > :p1)
+    #   or
+    # ([pk1] = :p0 and [pk2] = :p1 and [pk3] > :p2)
+    or_clauses = []
+    pks_left = pks[:]
+    while pks_left:
+        and_clauses = []
+        last = pks_left[-1]
+        rest = pks_left[:-1]
+        and_clauses = ['{} = :p{}'.format(
+            escape_sqlite(pk), (i + start_index)
+        ) for i, pk in enumerate(rest)]
+        and_clauses.append('{} > :p{}'.format(
+            escape_sqlite(last), (len(rest) + start_index)
+        ))
+        or_clauses.append('({})'.format(' and '.join(and_clauses)))
+        pks_left.pop()
+    or_clauses.reverse()
+    return '({})'.format('\n  or\n'.join(or_clauses))
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -75,6 +156,8 @@ class InvalidSql(Exception):
 
 allowed_sql_res = [
     re.compile(r'^select\b'),
+    re.compile(r'^explain select\b'),
+    re.compile(r'^explain query plan select\b'),
     re.compile(r'^with\b'),
 ]
 disallawed_sql_res = [
@@ -92,7 +175,7 @@ def expand_sql(sql):
 
 
 def validate_sql_select(sql):
-    sql = expand_sql(sql.strip().lower())
+    sql = sql.strip().lower()
     if not any(r.match(sql) for r in allowed_sql_res):
         raise InvalidSql('Statement must be a SELECT')
     for r, msg in disallawed_sql_res:
@@ -100,50 +183,85 @@ def validate_sql_select(sql):
             raise InvalidSql(msg)
 
 
-def path_with_added_args(request, args):
+def append_querystring(url, querystring):
+    op = "&" if ("?" in url) else "?"
+    return "{}{}{}".format(
+        url, op, querystring
+    )
+
+
+def path_with_added_args(request, args, path=None):
+    path = path or request.path
     if isinstance(args, dict):
         args = args.items()
-    arg_keys = set(a[0] for a in args)
-    current = [
-        (key, value)
-        for key, value in request.raw_args.items()
-        if key not in arg_keys
-    ]
+    args_to_remove = {k for k, v in args if v is None}
+    current = []
+    for key, value in urllib.parse.parse_qsl(request.query_string):
+        if key not in args_to_remove:
+            current.append((key, value))
     current.extend([
         (key, value)
         for key, value in args
         if value is not None
     ])
-    query_string = urllib.parse.urlencode(sorted(current))
+    query_string = urllib.parse.urlencode(current)
     if query_string:
         query_string = '?{}'.format(query_string)
-    return request.path + query_string
+    return path + query_string
 
 
-def path_with_ext(request, ext):
-    path = request.path
-    path += ext
-    if request.query_string:
-        path += '?' + request.query_string
-    return path
+def path_with_removed_args(request, args, path=None):
+    # args can be a dict or a set
+    path = path or request.path
+    current = []
+    if isinstance(args, set):
+        def should_remove(key, value):
+            return key in args
+    elif isinstance(args, dict):
+        # Must match key AND value
+        def should_remove(key, value):
+            return args.get(key) == value
+    for key, value in urllib.parse.parse_qsl(request.query_string):
+        if not should_remove(key, value):
+            current.append((key, value))
+    query_string = urllib.parse.urlencode(current)
+    if query_string:
+        query_string = '?{}'.format(query_string)
+    return path + query_string
+
+
+def path_with_replaced_args(request, args, path=None):
+    path = path or request.path
+    if isinstance(args, dict):
+        args = args.items()
+    keys_to_replace = {p[0] for p in args}
+    current = []
+    for key, value in urllib.parse.parse_qsl(request.query_string):
+        if key not in keys_to_replace:
+            current.append((key, value))
+    current.extend([p for p in args if p[1] is not None])
+    query_string = urllib.parse.urlencode(current)
+    if query_string:
+        query_string = '?{}'.format(query_string)
+    return path + query_string
 
 
 _css_re = re.compile(r'''['"\n\\]''')
-_boring_table_name_re = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+_boring_keyword_re = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
 
 def escape_css_string(s):
     return _css_re.sub(lambda m: '\\{:X}'.format(ord(m.group())), s)
 
 
-def escape_sqlite_table_name(s):
-    if _boring_table_name_re.match(s):
+def escape_sqlite(s):
+    if _boring_keyword_re.match(s) and (s.lower() not in reserved_words):
         return s
     else:
         return '[{}]'.format(s)
 
 
-def make_dockerfile(files, metadata_file, extra_options, branch, template_dir, static):
+def make_dockerfile(files, metadata_file, extra_options, branch, template_dir, plugins_dir, static, install, spatialite, version_note):
     cmd = ['"datasette"', '"serve"', '"--host"', '"0.0.0.0"']
     cmd.append('"' + '", "'.join(files) + '"')
     cmd.extend(['"--cors"', '"--port"', '"8001"', '"--inspect-file"', '"inspect-data.json"'])
@@ -151,33 +269,55 @@ def make_dockerfile(files, metadata_file, extra_options, branch, template_dir, s
         cmd.extend(['"--metadata"', '"{}"'.format(metadata_file)])
     if template_dir:
         cmd.extend(['"--template-dir"', '"templates/"'])
+    if plugins_dir:
+        cmd.extend(['"--plugins-dir"', '"plugins/"'])
+    if version_note:
+        cmd.extend(['"--version-note"', '"{}"'.format(version_note)])
     if static:
         for mount_point, _ in static:
             cmd.extend(['"--static"', '"{}:{}"'.format(mount_point, mount_point)])
     if extra_options:
         for opt in extra_options.split():
             cmd.append('"{}"'.format(opt))
-    install_from = 'datasette'
+
     if branch:
-        install_from = 'https://github.com/simonw/datasette/archive/{}.zip'.format(
+        install = ['https://github.com/simonw/datasette/archive/{}.zip'.format(
             branch
-        )
+        )] + list(install)
+    else:
+        install = ['datasette'] + list(install)
+
     return '''
-FROM python:3
+FROM python:3.6
 COPY . /app
 WORKDIR /app
+{spatialite_extras}
 RUN pip install {install_from}
 RUN datasette inspect {files} --inspect-file inspect-data.json
 EXPOSE 8001
 CMD [{cmd}]'''.format(
         files=' '.join(files),
         cmd=', '.join(cmd),
-        install_from=install_from,
+        install_from=' '.join(install),
+        spatialite_extras=SPATIALITE_DOCKERFILE_EXTRAS if spatialite else '',
     ).strip()
 
 
 @contextmanager
-def temporary_docker_directory(files, name, metadata, extra_options, branch, template_dir, static, extra_metadata=None):
+def temporary_docker_directory(
+    files,
+    name,
+    metadata,
+    extra_options,
+    branch,
+    template_dir,
+    plugins_dir,
+    static,
+    install,
+    spatialite,
+    version_note,
+    extra_metadata=None
+):
     extra_metadata = extra_metadata or {}
     tmp = tempfile.TemporaryDirectory()
     # We create a datasette folder in there to get a nicer now deploy name
@@ -203,7 +343,11 @@ def temporary_docker_directory(files, name, metadata, extra_options, branch, tem
             extra_options,
             branch,
             template_dir,
+            plugins_dir,
             static,
+            install,
+            spatialite,
+            version_note,
         )
         os.chdir(datasette_dir)
         if metadata_content:
@@ -215,6 +359,11 @@ def temporary_docker_directory(files, name, metadata, extra_options, branch, tem
             link_or_copy_directory(
                 os.path.join(saved_cwd, template_dir),
                 os.path.join(datasette_dir, 'templates')
+            )
+        if plugins_dir:
+            link_or_copy_directory(
+                os.path.join(saved_cwd, plugins_dir),
+                os.path.join(datasette_dir, 'plugins')
             )
         for mount_point, path in static:
             link_or_copy_directory(
@@ -228,7 +377,18 @@ def temporary_docker_directory(files, name, metadata, extra_options, branch, tem
 
 
 @contextmanager
-def temporary_heroku_directory(files, name, metadata, extra_options, branch, template_dir, static, extra_metadata=None):
+def temporary_heroku_directory(
+    files,
+    name,
+    metadata,
+    extra_options,
+    branch,
+    template_dir,
+    plugins_dir,
+    static,
+    install,
+    extra_metadata=None
+):
     # FIXME: lots of duplicated code from above
 
     extra_metadata = extra_metadata or {}
@@ -258,13 +418,13 @@ def temporary_heroku_directory(files, name, metadata, extra_options, branch, tem
         open('runtime.txt', 'w').write('python-3.6.3')
 
         if branch:
-            install_from = 'https://github.com/simonw/datasette/archive/{branch}.zip'.format(
+            install = ['https://github.com/simonw/datasette/archive/{branch}.zip'.format(
                 branch=branch
-            )
+            )] + list(install)
         else:
-            install_from = 'datasette'
+            install = ['datasette'] + list(install)
 
-        open('requirements.txt', 'w').write(install_from)
+        open('requirements.txt', 'w').write('\n'.join(install))
         os.mkdir('bin')
         open('bin/post_compile', 'w').write('datasette inspect --inspect-file inspect-data.json')
 
@@ -275,6 +435,15 @@ def temporary_heroku_directory(files, name, metadata, extra_options, branch, tem
                 os.path.join(tmp.name, 'templates')
             )
             extras.extend(['--template-dir', 'templates/'])
+        if plugins_dir:
+            link_or_copy_directory(
+                os.path.join(saved_cwd, plugins_dir),
+                os.path.join(tmp.name, 'plugins')
+            )
+            extras.extend(['--plugins-dir', 'plugins/'])
+
+        if metadata:
+            extras.extend(['--metadata', 'metadata.json'])
         for mount_point, path in static:
             link_or_copy_directory(
                 os.path.join(saved_cwd, path),
@@ -332,7 +501,12 @@ def get_all_foreign_keys(conn):
     return table_to_foreign_keys
 
 
-def detect_fts(conn, table, return_sql=False):
+def detect_spatialite(conn):
+    rows = conn.execute('select 1 from sqlite_master where tbl_name = "geometry_columns"').fetchall()
+    return len(rows) > 0
+
+
+def detect_fts(conn, table):
     "Detect if table has a corresponding FTS virtual table and return it"
     rows = conn.execute(detect_fts_sql(table)).fetchall()
     if len(rows) == 0:
@@ -414,18 +588,20 @@ class Filters:
         f.key: f for f in _filters
     }
 
-    def __init__(self, pairs):
+    def __init__(self, pairs, units={}, ureg=None):
         self.pairs = pairs
+        self.units = units
+        self.ureg = ureg
 
     def lookups(self):
         "Yields (lookup, display, no_argument) pairs"
         for filter in self._filters:
             yield filter.key, filter.display, filter.no_argument
 
-    def human_description(self, extra=None):
+    def human_description_en(self, extra=None):
         bits = []
         if extra:
-            bits.append(extra)
+            bits.extend(extra)
         for column, lookup, value in self.selections():
             filter = self._filters_by_key.get(lookup, None)
             if filter:
@@ -437,7 +613,10 @@ class Filters:
             and_bits.append(', '.join(commas))
         if tail:
             and_bits.append(tail[0])
-        return ' and '.join(and_bits)
+        s = ' and '.join(and_bits)
+        if not s:
+            return ''
+        return 'where {}'.format(s)
 
     def selections(self):
         "Yields (column, lookup, value) tuples"
@@ -452,13 +631,27 @@ class Filters:
     def has_selections(self):
         return bool(self.pairs)
 
+    def convert_unit(self, column, value):
+        "If the user has provided a unit in the quey, convert it into the column unit, if present."
+        if column not in self.units:
+            return value
+
+        # Try to interpret the value as a unit
+        value = self.ureg(value)
+        if isinstance(value, numbers.Number):
+            # It's just a bare number, assume it's the column unit
+            return value
+
+        column_unit = self.ureg(self.units[column])
+        return value.to(column_unit).magnitude
+
     def build_where_clauses(self):
         sql_bits = []
         params = {}
         for i, (column, lookup, value) in enumerate(self.selections()):
             filter = self._filters_by_key.get(lookup, None)
             if filter:
-                sql_bit, param = filter.where_clause(column, value, i)
+                sql_bit, param = filter.where_clause(column, self.convert_unit(column, value), i)
                 sql_bits.append(sql_bit)
                 if param is not None:
                     param_id = 'p{}'.format(i)
@@ -560,3 +753,123 @@ def link_or_copy_directory(src, dst):
         shutil.copytree(src, dst, copy_function=os.link)
     except OSError:
         shutil.copytree(src, dst)
+
+
+def module_from_path(path, name):
+    # Adapted from http://sayspy.blogspot.com/2011/07/how-to-import-module-from-just-file.html
+    mod = imp.new_module(name)
+    mod.__file__ = path
+    with open(path, 'r') as file:
+        code = compile(file.read(), path, 'exec', dont_inherit=True)
+    exec(code, mod.__dict__)
+    return mod
+
+
+def get_plugins(pm):
+    plugins = []
+    plugin_to_distinfo = dict(pm.list_plugin_distinfo())
+    for plugin in pm.get_plugins():
+        static_path = None
+        templates_path = None
+        try:
+            if pkg_resources.resource_isdir(plugin.__name__, 'static'):
+                static_path = pkg_resources.resource_filename(plugin.__name__, 'static')
+            if pkg_resources.resource_isdir(plugin.__name__, 'templates'):
+                templates_path = pkg_resources.resource_filename(plugin.__name__, 'templates')
+        except (KeyError, ImportError):
+            # Caused by --plugins_dir= plugins - KeyError/ImportError thrown in Py3.5
+            pass
+        plugin_info = {
+            'name': plugin.__name__,
+            'static_path': static_path,
+            'templates_path': templates_path,
+        }
+        distinfo = plugin_to_distinfo.get(plugin)
+        if distinfo:
+            plugin_info['version'] = distinfo.version
+        plugins.append(plugin_info)
+    return plugins
+
+
+FORMATS = ('csv', 'json', 'jsono')
+
+
+def resolve_table_and_format(table_and_format, table_exists):
+    if '.' in table_and_format:
+        # Check if a table exists with this exact name
+        if table_exists(table_and_format):
+            return table_and_format, None
+    # Check if table ends with a known format
+    for _format in FORMATS:
+        if table_and_format.endswith(".{}".format(_format)):
+            table = table_and_format[:-(len(_format) + 1)]
+            return table, _format
+    return table_and_format, None
+
+
+def path_with_format(request, format, extra_qs=None):
+    qs = extra_qs or {}
+    path = request.path
+    if "." in request.path:
+        qs["_format"] = format
+    else:
+        path = "{}.{}".format(path, format)
+    if qs:
+        extra = urllib.parse.urlencode(sorted(qs.items()))
+        if request.query_string:
+            path = "{}?{}&{}".format(
+                path, request.query_string, extra
+            )
+        else:
+            path = "{}?{}".format(path, extra)
+    elif request.query_string:
+        path = "{}?{}".format(path, request.query_string)
+    return path
+
+
+class CustomRow(OrderedDict):
+    # Loose imitation of sqlite3.Row which offers
+    # both index-based AND key-based lookups
+    def __init__(self, columns, values=None):
+        self.columns = columns
+        if values:
+            self.update(values)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return super().__getitem__(self.columns[key])
+        else:
+            return super().__getitem__(key)
+
+    def __iter__(self):
+        for column in self.columns:
+            yield self[column]
+
+
+def value_as_boolean(value):
+    if value.lower() not in ('on', 'off', 'true', 'false', '1', '0'):
+        raise ValueAsBooleanError
+    return value.lower() in ('on', 'true', '1')
+
+
+class ValueAsBooleanError(ValueError):
+    pass
+
+
+class WriteLimitExceeded(Exception):
+    pass
+
+
+class LimitedWriter:
+    def __init__(self, writer, limit_mb):
+        self.writer = writer
+        self.limit_bytes = limit_mb * 1024 * 1024
+        self.bytes_count = 0
+
+    def write(self, bytes):
+        self.bytes_count += len(bytes)
+        if self.limit_bytes and (self.bytes_count > self.limit_bytes):
+            raise WriteLimitExceeded("CSV contains more than {} bytes".format(
+                self.limit_bytes
+            ))
+        self.writer.write(bytes)

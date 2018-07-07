@@ -1,5 +1,531 @@
+=========
 Changelog
 =========
+
+.. _v0_23_1:
+
+0.23.1 (2018-06-21)
+-------------------
+
+Minor bugfix release.
+
+- Correctly display empty strings in HTML table, closes `#314 <https://github.com/simonw/datasette/issues/314>`_
+- Allow "." in database filenames, closes `#302 <https://github.com/simonw/datasette/issues/302>`_
+- 404s ending in slash redirect to remove that slash, closes `#309 <https://github.com/simonw/datasette/issues/309>`_
+- Fixed incorrect display of compound primary keys with foreign key
+  references. Closes `#319 <https://github.com/simonw/datasette/issues/319>`_
+- Docs + example of canned SQL query using || concatenation. Closes `#321 <https://github.com/simonw/datasette/issues/321>`_
+- Correctly display facets with value of 0 - closes `#318 <https://github.com/simonw/datasette/issues/318>`_
+- Default 'expand labels' to checked in CSV advanced export
+
+.. _v0_23:
+
+0.23 (2018-06-18)
+-----------------
+
+This release features CSV export, improved options for foreign key expansions,
+new configuration settings and improved support for SpatiaLite.
+
+See `datasette/compare/0.22.1...0.23
+<https://github.com/simonw/datasette/compare/0.22.1...0.23>`_ for a full list of
+commits added since the last release.
+
+CSV export
+~~~~~~~~~~
+
+Any Datasette table, view or custom SQL query can now be exported as CSV.
+
+.. image:: advanced_export.png
+
+Check out the :ref:`CSV export documentation <csv_export>` for more details, or
+try the feature out on
+https://fivethirtyeight.datasettes.com/fivethirtyeight/bechdel%2Fmovies
+
+If your table has more than :ref:`config_max_returned_rows` (default 1,000)
+Datasette provides the option to *stream all rows*. This option takes advantage
+of async Python and Datasette's efficient :ref:`pagination <pagination>` to
+iterate through the entire matching result set and stream it back as a
+downloadable CSV file.
+
+Foreign key expansions
+~~~~~~~~~~~~~~~~~~~~~~
+
+When Datasette detects a foreign key reference it attempts to resolve a label
+for that reference (automatically or using the :ref:`label_columns` metadata
+option) so it can display a link to the associated row.
+
+This expansion is now also available for JSON and CSV representations of the
+table, using the new ``_labels=on`` querystring option. See
+:ref:`expand_foreign_keys` for more details.
+
+New configuration settings
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Datasette's :ref:`config` now also supports boolean settings. A number of new
+configuration options have been added:
+
+* ``num_sql_threads`` - the number of threads used to execute SQLite queries. Defaults to 3.
+* ``allow_facet`` - enable or disable custom :ref:`facets` using the `_facet=` parameter. Defaults to on.
+* ``suggest_facets`` - should Datasette suggest facets? Defaults to on.
+* ``allow_download`` - should users be allowed to download the entire SQLite database? Defaults to on.
+* ``allow_sql`` - should users be allowed to execute custom SQL queries? Defaults to on.
+* ``default_cache_ttl`` - Default HTTP caching max-age header in seconds. Defaults to 365 days - caching can be disabled entirely by settings this to 0.
+* ``cache_size_kb`` - Set the amount of memory SQLite uses for its `per-connection cache <https://www.sqlite.org/pragma.html#pragma_cache_size>`_, in KB.
+* ``allow_csv_stream`` - allow users to stream entire result sets as a single CSV file. Defaults to on.
+* ``max_csv_mb`` - maximum size of a returned CSV file in MB. Defaults to 100MB, set to 0 to disable this limit.
+
+Control HTTP caching with ?_ttl=
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can now customize the HTTP max-age header that is sent on a per-URL basis, using the new ``?_ttl=`` querystring parameter.
+
+You can set this to any value in seconds, or you can set it to 0 to disable HTTP caching entirely.
+
+Consider for example this query which returns a randomly selected member of the Avengers::
+
+    select * from [avengers/avengers] order by random() limit 1
+
+If you hit the following page repeatedly you will get the same result, due to HTTP caching:
+
+`/fivethirtyeight?sql=select+*+from+%5Bavengers%2Favengers%5D+order+by+random%28%29+limit+1 <https://fivethirtyeight.datasettes.com/fivethirtyeight?sql=select+*+from+%5Bavengers%2Favengers%5D+order+by+random%28%29+limit+1>`_
+
+By adding `?_ttl=0` to the zero you can ensure the page will not be cached and get back a different super hero every time:
+
+`/fivethirtyeight?sql=select+*+from+%5Bavengers%2Favengers%5D+order+by+random%28%29+limit+1&_ttl=0 <https://fivethirtyeight.datasettes.com/fivethirtyeight?sql=select+*+from+%5Bavengers%2Favengers%5D+order+by+random%28%29+limit+1&_ttl=0>`_
+
+Improved support for SpatiaLite
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The `SpatiaLite module <https://www.gaia-gis.it/fossil/libspatialite/index>`_
+for SQLite adds robust geospatial features to the database.
+
+Getting SpatiaLite working can be tricky, especially if you want to use the most
+recent alpha version (with support for K-nearest neighbor).
+
+Datasette now includes :ref:`extensive documentation on SpatiaLite
+<spatialite>`, and thanks to `Ravi Kotecha <https://github.com/r4vi>`_ our GitHub
+repo includes a `Dockerfile
+<https://github.com/simonw/datasette/blob/master/Dockerfile>`_ that can build
+the latest SpatiaLite and configure it for use with Datasette.
+
+The ``datasette publish`` and ``datasette package`` commands now accept a new
+``--spatialite`` argument which causes them to install and configure SpatiaLite
+as part of the container they deploy.
+
+latest.datasette.io
+~~~~~~~~~~~~~~~~~~~
+
+Every commit to Datasette master is now automatically deployed by Travis CI to
+https://latest.datasette.io/ - ensuring there is always a live demo of the
+latest version of the software.
+
+The demo uses `the fixtures
+<https://github.com/simonw/datasette/blob/master/tests/fixtures.py>`_ from our
+unit tests, ensuring it demonstrates the same range of functionality that is
+covered by the tests.
+
+You can see how the deployment mechanism works in our `.travis.yml
+<https://github.com/simonw/datasette/blob/master/.travis.yml>`_ file.
+
+Miscellaneous
+~~~~~~~~~~~~~
+
+* Got JSON data in one of your columns? Use the new ``?_json=COLNAME`` argument
+  to tell Datasette to return that JSON value directly rather than encoding it
+  as a string.
+* If you just want an array of the first value of each row, use the new
+  ``?_shape=arrayfirst`` option - `example
+  <https://latest.datasette.io/fixtures.json?sql=select+neighborhood+from+facetable+order+by+pk+limit+101&_shape=arrayfirst>`_.
+
+0.22.1 (2018-05-23)
+-------------------
+
+Bugfix release, plus we now use `versioneer <https://github.com/warner/python-versioneer>`_ for our version numbers.
+
+- Faceting no longer breaks pagination, fixes `#282 <https://github.com/simonw/datasette/issues/282>`_
+- Add ``__version_info__`` derived from `__version__` [Robert Gieseke]
+
+  This might be tuple of more than two values (major and minor
+  version) if commits have been made after a release.
+- Add version number support with Versioneer. [Robert Gieseke]
+
+  Versioneer Licence:
+  Public Domain (CC0-1.0)
+
+  Closes `#273 <https://github.com/simonw/datasette/issues/273>`_
+- Refactor inspect logic [Russ Garrett]
+
+0.22 (2018-05-20)
+-----------------
+
+The big new feature in this release is :ref:`facets`. Datasette can now apply faceted browse to any column in any table. It will also suggest possible facets. See the `Datasette Facets <https://simonwillison.net/2018/May/20/datasette-facets/>`_ announcement post for more details.
+
+In addition to the work on facets:
+
+- Added `docs for introspection endpoints <https://datasette.readthedocs.io/en/latest/introspection.html>`_
+
+- New ``--config`` option, added ``--help-config``, closes `#274 <https://github.com/simonw/datasette/issues/274>`_
+
+  Removed the ``--page_size=`` argument to ``datasette serve`` in favour of::
+
+      datasette serve --config default_page_size:50 mydb.db
+
+  Added new help section::
+
+      $ datasette --help-config
+      Config options:
+        default_page_size            Default page size for the table view
+                                     (default=100)
+        max_returned_rows            Maximum rows that can be returned from a table
+                                     or custom query (default=1000)
+        sql_time_limit_ms            Time limit for a SQL query in milliseconds
+                                     (default=1000)
+        default_facet_size           Number of values to return for requested facets
+                                     (default=30)
+        facet_time_limit_ms          Time limit for calculating a requested facet
+                                     (default=200)
+        facet_suggest_time_limit_ms  Time limit for calculating a suggested facet
+                                     (default=50)
+- Only apply responsive table styles to ``.rows-and-column``
+
+  Otherwise they interfere with tables in the description, e.g. on
+  https://fivethirtyeight.datasettes.com/fivethirtyeight/nba-elo%2Fnbaallelo
+
+- Refactored views into new ``views/`` modules, refs `#256 <https://github.com/simonw/datasette/issues/256>`_
+- `Documentation for SQLite full-text search <http://datasette.readthedocs.io/en/latest/full_text_search.html>`_ support, closes `#253 <https://github.com/simonw/datasette/issues/253>`_
+- ``/-/versions`` now includes SQLite ``fts_versions``, closes `#252 <https://github.com/simonw/datasette/issues/252>`_
+
+0.21 (2018-05-05)
+-----------------
+
+New JSON ``_shape=`` options, the ability to set table ``_size=`` and a mechanism for searching within specific columns.
+
+- Default tests to using a longer timelimit
+
+  Every now and then a test will fail in Travis CI on Python 3.5 because it hit
+  the default 20ms SQL time limit.
+
+  Test fixtures now default to a 200ms time limit, and we only use the 20ms time
+  limit for the specific test that tests query interruption. This should make
+  our tests on Python 3.5 in Travis much more stable.
+- Support ``_search_COLUMN=text`` searches, closes `#237 <https://github.com/simonw/datasette/issues/237>`_
+- Show version on ``/-/plugins`` page, closes `#248 <https://github.com/simonw/datasette/issues/248>`_
+- ``?_size=max`` option, closes `#249 <https://github.com/simonw/datasette/issues/249>`_
+- Added ``/-/versions`` and ``/-/versions.json``, closes `#244 <https://github.com/simonw/datasette/issues/244>`_
+
+  Sample output::
+
+      {
+        "python": {
+          "version": "3.6.3",
+          "full": "3.6.3 (default, Oct  4 2017, 06:09:38) \n[GCC 4.2.1 Compatible Apple LLVM 9.0.0 (clang-900.0.37)]"
+        },
+        "datasette": {
+          "version": "0.20"
+        },
+        "sqlite": {
+          "version": "3.23.1",
+          "extensions": {
+            "json1": null,
+            "spatialite": "4.3.0a"
+          }
+        }
+      }
+- Renamed ``?_sql_time_limit_ms=`` to ``?_timelimit``, closes `#242 <https://github.com/simonw/datasette/issues/242>`_
+- New ``?_shape=array`` option + tweaks to ``_shape``, closes `#245 <https://github.com/simonw/datasette/issues/245>`_
+
+  * Default is now ``?_shape=arrays`` (renamed from ``lists``)
+  * New ``?_shape=array`` returns an array of objects as the root object
+  * Changed ``?_shape=object`` to return the object as the root
+  * Updated docs
+
+- FTS tables now detected by ``inspect()``, closes `#240 <https://github.com/simonw/datasette/issues/240>`_
+- New ``?_size=XXX`` querystring parameter for table view, closes `#229 <https://github.com/simonw/datasette/issues/229>`_
+
+  Also added documentation for all of the ``_special`` arguments.
+
+  Plus deleted some duplicate logic implementing ``_group_count``.
+- If ``max_returned_rows==page_size``, increment ``max_returned_rows`` - fixes `#230 <https://github.com/simonw/datasette/issues/230>`_
+- New ``hidden: True`` option for table metadata, closes `#239 <https://github.com/simonw/datasette/issues/239>`_
+- Hide ``idx_*`` tables if spatialite detected, closes `#228 <https://github.com/simonw/datasette/issues/228>`_
+- Added ``class=rows-and-columns`` to custom query results table
+- Added CSS class ``rows-and-columns`` to main table
+- ``label_column`` option in ``metadata.json`` - closes `#234 <https://github.com/simonw/datasette/issues/234>`_
+
+0.20 (2018-04-20)
+-----------------
+
+Mostly new work on the :ref:`plugins` mechanism: plugins can now bundle static assets and custom templates, and ``datasette publish`` has a new ``--install=name-of-plugin`` option.
+
+- Add col-X classes to HTML table on custom query page
+- Fixed out-dated template in documentation
+- Plugins can now bundle custom templates, `#224 <https://github.com/simonw/datasette/issues/224>`_
+- Added /-/metadata /-/plugins /-/inspect, `#225 <https://github.com/simonw/datasette/issues/225>`_
+- Documentation for --install option, refs `#223 <https://github.com/simonw/datasette/issues/223>`_
+- Datasette publish/package --install option, `#223 <https://github.com/simonw/datasette/issues/223>`_
+- Fix for plugins in Python 3.5, `#222 <https://github.com/simonw/datasette/issues/222>`_
+- New plugin hooks: extra_css_urls() and extra_js_urls(), `#214 <https://github.com/simonw/datasette/issues/214>`_
+- /-/static-plugins/PLUGIN_NAME/ now serves static/ from plugins
+- <th> now gets class="col-X" - plus added col-X documentation
+- Use to_css_class for table cell column classes
+
+  This ensures that columns with spaces in the name will still
+  generate usable CSS class names. Refs `#209 <https://github.com/simonw/datasette/issues/209>`_
+- Add column name classes to <td>s, make PK bold [Russ Garrett]
+- Don't duplicate simple primary keys in the link column [Russ Garrett]
+
+  When there's a simple (single-column) primary key, it looks weird to
+  duplicate it in the link column.
+
+  This change removes the second PK column and treats the link column as
+  if it were the PK column from a header/sorting perspective.
+- Correct escaping for HTML display of row links [Russ Garrett]
+- Longer time limit for test_paginate_compound_keys
+
+  It was failing intermittently in Travis - see `#209 <https://github.com/simonw/datasette/issues/209>`_
+- Use application/octet-stream for downloadable databses
+- Updated PyPI classifiers
+- Updated PyPI link to pypi.org
+
+0.19 (2018-04-16)
+-----------------
+
+This is the first preview of the new Datasette plugins mechanism. Only two
+plugin hooks are available so far - for custom SQL functions and custom template
+filters. There's plenty more to come - read `the documentation
+<https://datasette.readthedocs.io/en/latest/plugins.html>`_ and get involved in
+`the tracking ticket <https://github.com/simonw/datasette/issues/14>`_ if you
+have feedback on the direction so far.
+
+- Fix for ``_sort_desc=sortable_with_nulls`` test, refs `#216 <https://github.com/simonw/datasette/issues/216>`_
+
+- Fixed `#216 <https://github.com/simonw/datasette/issues/216>`_ - paginate correctly when sorting by nullable column
+
+- Initial documentation for plugins, closes `#213 <https://github.com/simonw/datasette/issues/213>`_
+
+  https://datasette.readthedocs.io/en/latest/plugins.html
+
+- New ``--plugins-dir=plugins/`` option (`#212 <https://github.com/simonw/datasette/issues/212>`_)
+
+  New option causing Datasette to load and evaluate all of the Python files in
+  the specified directory and register any plugins that are defined in those
+  files.
+
+  This new option is available for the following commands::
+
+      datasette serve mydb.db --plugins-dir=plugins/
+      datasette publish now/heroku mydb.db --plugins-dir=plugins/
+      datasette package mydb.db --plugins-dir=plugins/
+
+- Start of the plugin system, based on pluggy (`#210 <https://github.com/simonw/datasette/issues/14>`_)
+
+  Uses https://pluggy.readthedocs.io/ originally created for the py.test project
+
+  We're starting with two plugin hooks:
+
+  ``prepare_connection(conn)``
+
+  This is called when a new SQLite connection is created. It can be used to register custom SQL functions.
+
+  ``prepare_jinja2_environment(env)``
+
+  This is called with the Jinja2 environment. It can be used to register custom template tags and filters.
+
+  An example plugin which uses these two hooks can be found at https://github.com/simonw/datasette-plugin-demos or installed using ``pip install datasette-plugin-demos``
+
+  Refs `#14 <https://github.com/simonw/datasette/issues/14>`_
+
+- Return HTTP 405 on InvalidUsage rather than 500. [Russ Garrett]
+
+  This also stops it filling up the logs. This happens for HEAD requests
+  at the moment - which perhaps should be handled better, but that's a
+  different issue.
+
+
+0.18 (2018-04-14)
+-----------------
+
+This release introduces `support for units <http://datasette.readthedocs.io/en/latest/metadata.html#specifying-units-for-a-column>`_,
+contributed by Russ Garrett (`#203 <https://github.com/simonw/datasette/issues/203>`_).
+You can now optionally specify the units for specific columns using ``metadata.json``.
+Once specified, units will be displayed in the HTML view of your table. They also become
+available for use in filters - if a column is configured with a unit of distance, you can
+request all rows where that column is less than 50 meters or more than 20 feet for example.
+
+- Link foreign keys which don't have labels. [Russ Garrett]
+
+  This renders unlabeled FKs as simple links.
+
+  Also includes bonus fixes for two minor issues:
+
+  * In foreign key link hrefs the primary key was escaped using HTML
+    escaping rather than URL escaping. This broke some non-integer PKs.
+  * Print tracebacks to console when handling 500 errors.
+
+- Fix SQLite error when loading rows with no incoming FKs. [Russ
+  Garrett]
+
+  This fixes ``ERROR: conn=<sqlite3.Connection object at 0x10bbb9f10>, sql
+  = 'select ', params = {'id': '1'}`` caused by an invalid query when
+  loading incoming FKs.
+
+  The error was ignored due to async but it still got printed to the
+  console.
+
+- Allow custom units to be registered with Pint. [Russ Garrett]
+- Support units in filters. [Russ Garrett]
+- Tidy up units support. [Russ Garrett]
+
+  * Add units to exported JSON
+  * Units key in metadata skeleton
+  * Docs
+
+- Initial units support. [Russ Garrett]
+
+  Add support for specifying units for a column in ``metadata.json`` and
+  rendering them on display using
+  `pint <https://pint.readthedocs.io/en/latest/>`_
+
+
+0.17 (2018-04-13)
+-----------------
+- Release 0.17 to fix issues with PyPI
+
+
+0.16 (2018-04-13)
+-----------------
+- Better mechanism for handling errors; 404s for missing table/database
+
+  New error mechanism closes `#193 <https://github.com/simonw/datasette/issues/193>`_
+
+  404s for missing tables/databases closes `#184 <https://github.com/simonw/datasette/issues/184>`_
+
+- long_description in markdown for the new PyPI
+- Hide Spatialite system tables. [Russ Garrett]
+- Allow ``explain select`` / ``explain query plan select`` `#201 <https://github.com/simonw/datasette/issues/201>`_
+- Datasette inspect now finds primary_keys `#195 <https://github.com/simonw/datasette/issues/195>`_
+- Ability to sort using form fields (for mobile portrait mode) `#199 <https://github.com/simonw/datasette/issues/199>`_
+
+  We now display sort options as a select box plus a descending checkbox, which
+  means you can apply sort orders even in portrait mode on a mobile phone where
+  the column headers are hidden.
+
+0.15 (2018-04-09)
+-----------------
+
+The biggest new feature in this release is the ability to sort by column. On the
+table page the column headers can now be clicked to apply sort (or descending
+sort), or you can specify ``?_sort=column`` or ``?_sort_desc=column`` directly
+in the URL.
+
+- ``table_rows`` => ``table_rows_count``, ``filtered_table_rows`` =>
+  ``filtered_table_rows_count``
+
+  Renamed properties. Closes `#194 <https://github.com/simonw/datasette/issues/194>`_
+
+- New ``sortable_columns`` option in ``metadata.json`` to control sort options.
+
+  You can now explicitly set which columns in a table can be used for sorting
+  using the ``_sort`` and ``_sort_desc`` arguments using ``metadata.json``::
+
+      {
+          "databases": {
+              "database1": {
+                  "tables": {
+                      "example_table": {
+                          "sortable_columns": [
+                              "height",
+                              "weight"
+                          ]
+                      }
+                  }
+              }
+          }
+      }
+
+  Refs `#189 <https://github.com/simonw/datasette/issues/189>`_
+
+- Column headers now link to sort/desc sort - refs `#189 <https://github.com/simonw/datasette/issues/189>`_
+
+- ``_sort`` and ``_sort_desc`` parameters for table views
+
+  Allows for paginated sorted results based on a specified column.
+
+  Refs `#189 <https://github.com/simonw/datasette/issues/189>`_
+
+- Total row count now correct even if ``_next`` applied
+
+- Use .custom_sql() for _group_count implementation (refs `#150 <https://github.com/simonw/datasette/issues/150>`_)
+
+- Make HTML title more readable in query template (`#180 <https://github.com/simonw/datasette/issues/180>`_) [Ryan Pitts]
+
+- New ``?_shape=objects/object/lists`` param for JSON API (`#192 <https://github.com/simonw/datasette/issues/192>`_)
+
+  New ``_shape=`` parameter replacing old ``.jsono`` extension
+
+  Now instead of this::
+
+      /database/table.jsono
+
+  We use the ``_shape`` parameter like this::
+
+      /database/table.json?_shape=objects
+
+  Also introduced a new ``_shape`` called ``object`` which looks like this::
+
+      /database/table.json?_shape=object
+
+  Returning an object for the rows key::
+
+      ...
+      "rows": {
+          "pk1": {
+              ...
+          },
+          "pk2": {
+              ...
+          }
+      }
+
+  Refs `#122 <https://github.com/simonw/datasette/issues/122>`_
+
+- Utility for writing test database fixtures to a .db file
+
+  ``python tests/fixtures.py /tmp/hello.db``
+
+  This is useful for making a SQLite database of the test fixtures for
+  interactive exploration.
+
+- Compound primary key ``_next=`` now plays well with extra filters
+
+  Closes `#190 <https://github.com/simonw/datasette/issues/190>`_
+
+- Fixed bug with keyset pagination over compound primary keys
+
+  Refs `#190 <https://github.com/simonw/datasette/issues/190>`_
+
+- Database/Table views inherit ``source/license/source_url/license_url``
+  metadata
+
+  If you set the ``source_url/license_url/source/license`` fields in your root
+  metadata those values will now be inherited all the way down to the database
+  and table templates.
+
+  The ``title/description`` are NOT inherited.
+
+  Also added unit tests for the HTML generated by the metadata.
+
+  Refs `#185 <https://github.com/simonw/datasette/issues/185>`_
+
+- Add metadata, if it exists, to heroku temp dir (`#178 <https://github.com/simonw/datasette/issues/178>`_) [Tony Hirst]
+- Initial documentation for pagination
+- Broke up test_app into test_api and test_html
+- Fixed bug with .json path regular expression
+
+  I had a table called ``geojson`` and it caused an exception because the regex
+  was matching ``.json`` and not ``\.json``
+
+- Deploy to Heroku with Python 3.6.3
 
 0.14 (2017-12-09)
 -----------------

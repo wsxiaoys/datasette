@@ -23,7 +23,9 @@ Named parameters
 ----------------
 
 Datasette has special support for SQLite named parameters. Consider a SQL query
-like this::
+like this:
+
+.. code-block:: sql
 
     select * from Street_Tree_List
     where "PermitNotes" like :notes
@@ -45,39 +47,6 @@ Datasette disallows custom SQL containing the string PRAGMA, as SQLite pragma
 statements can be used to change database settings at runtime. If you need to
 include the string "pragma" in a query you can do so safely using a named
 parameter.
-
-Query limits
-------------
-
-To prevent rogue, long-running queries from making a Datasette instance
-inaccessible to other users, Datasette imposes some limits on the SQL that you
-can execute.
-
-By default, queries have a time limit of one second. If a query takes longer
-than this to run Datasette will terminate the query and return an error.
-
-If this time limit is too short for you, you can customize it using the
-``sql_time_limit_ms`` option - for example, to increase it to 3.5 seconds::
-
-    datasette mydatabase.db --sql_time_limit_ms=3500
-
-You can optionally set a lower time limit for an individual query using the
-``_sql_time_limit_ms`` query string argument::
-
-    /my-database/my-table?qSpecies=44&_sql_time_limit_ms=100
-
-This would set the time limit to 100ms for that specific query. This feature
-is useful if you are working with databases of unknown size and complexity -
-a query that might make perfect sense for a smaller table could take too long
-to execute on a table with millions of rows. By setting custom time limits you
-can execute queries "optimistically" - e.g. give me an exact count of rows
-matching this query but only if it takes less than 100ms to calculate.
-
-Datasette returns a maximum of 1,000 rows of data at a time. If you execute a
-query that returns more than 1,000 rows, Datasette will return the first 1,000
-and include a warning that the result set has been truncated. You can use
-OFFSET/LIMIT or other methods in your SQL to implement pagination if you need to
-return more than 1,000 rows.
 
 Views
 -----
@@ -126,4 +95,60 @@ For the above example, that URL would be::
 Canned queries support named parameters, so if you include those in the SQL you
 will then be able to enter them using the form fields on the canned query page
 or by adding them to the URL. This means canned queries can be used to create
-custom JSON APIs based on a carefully designed SQL.
+custom JSON APIs based on a carefully designed SQL statement.
+
+Here's an example of a canned query with a named parameter:
+
+.. code-block:: sql
+
+    select neighborhood, facet_cities.name, state
+    from facetable join facet_cities on facetable.city_id = facet_cities.id
+    where neighborhood like '%' || :text || '%' order by neighborhood;
+
+In the canned query JSON it looks like this::
+
+    {
+        "databases": {
+           "fixtures": {
+               "queries": {
+                   "neighborhood_search": "select neighborhood, facet_cities.name, state\nfrom facetable join facet_cities on facetable.city_id = facet_cities.id\nwhere neighborhood like '%' || :text || '%' order by neighborhood;"
+               }
+           }
+        }
+    }
+
+You can try this canned query out here:
+https://latest.datasette.io/fixtures/neighborhood_search?text=town
+
+Note that we are using SQLite string concatenation here - the ``||`` operator -
+to add wildcard ``%`` characters to the string provided by the user.
+
+.. _pagination:
+
+Pagination
+----------
+
+Datasette's default table pagination is designed to be extremely efficient. SQL
+OFFSET/LIMIT pagination can have a significant performance penalty once you get
+into multiple thousands of rows, as each page still requires the database to
+scan through every preceding row to find the correct offset.
+
+When paginating through tables, Datasette instead orders the rows in the table
+by their primary key and performs a WHERE clause against the last seen primary
+key for the previous page. For example:
+
+.. code-block:: sql
+
+    select rowid, * from Tree_List where rowid > 200 order by rowid limit 101
+
+This represents page three for this particular table, with a page size of 100.
+
+Note that we request 101 items in the limit clause rather than 100. This allows
+us to detect if we are on the last page of the results: if the query returns
+less than 101 rows we know we have reached the end of the pagination set.
+Datasette will only return the first 100 rows - the 101st is used purely to
+detect if there should be another page.
+
+Since the where clause acts against the index on the primary key, the query is
+extremely fast even for records that are a long way into the overall pagination
+set.
